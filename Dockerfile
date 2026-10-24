@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Mehrplattform-Build (amd64/arm64) ohne Emulation: Go baut auf der Build-Plattform quer.
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 ARG TARGETOS TARGETARCH
 ARG VERSION=dev
 WORKDIR /src
