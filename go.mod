@@ -1,6 +1,6 @@
 module telefonbuch
 
-go 1.24
+go 1.27
 
 require (
 	github.com/go-ldap/ldap/v3 v3.4.11
