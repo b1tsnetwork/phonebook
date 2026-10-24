@@ -13,6 +13,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/telefonbuch . && \
     mkdir -p /out/data
+COPY config.example.json /out/data/config.json
 
 FROM gcr.io/distroless/static-debian12:nonroot
 LABEL org.opencontainers.image.title="Telefonbuch" \
@@ -25,4 +26,4 @@ EXPOSE 8080
 USER nonroot:nonroot
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD ["/telefonbuch", "healthcheck"]
 ENTRYPOINT ["/telefonbuch"]
-CMD ["-config", "/etc/telefonbuch/config.json"]
+CMD ["-config", "/data/config.json"]

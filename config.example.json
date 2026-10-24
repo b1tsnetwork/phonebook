@@ -7,8 +7,8 @@
 
   "storage": {
     "mode": "mysql",
-    "jsonPath": "/var/lib/telefonbuch/telefonbuch.json",
-    "jsonAuditPath": "",
+    "jsonPath": "/data/telefonbuch.json",
+    "jsonAuditPath": "/data/audit.json",
     "jsonSnapshotInterval": "1h",
     "mysqlImport": "off",
     "mysqlImportInterval": "",
