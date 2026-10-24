@@ -1,0 +1,14 @@
+.git
+.github
+*.md
+!README.md
+config.json
+*.pem
+.env
+telefonbuch
+*.json.bak
+telefonbuch.json
+audit.json
+*.audit.json
+demo.json
+data/

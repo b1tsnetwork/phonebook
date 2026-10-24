@@ -1,0 +1,4 @@
+# Windows-Client: CRLF, damit cmd/PowerShell die Dateien sicher lesen (PowerShell-Skripte zusätzlich mit UTF-8-BOM)
+client/windows/*.ps1 text eol=crlf
+client/windows/*.cmd text eol=crlf
+client/windows/*.txt text eol=crlf

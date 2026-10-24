@@ -1,0 +1,38 @@
+# Telefonbuch + MySQL. Passwörter in .env ablegen (siehe README).
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: telefonbuch
+      MYSQL_USER: telefonbuch
+      MYSQL_PASSWORD: ${TB_DB_PASSWORD:?TB_DB_PASSWORD fehlt}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD fehlt}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      retries: 20
+
+  app:
+    image: ghcr.io/b1tsnetwork/phonebook:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TB_DB_HOST: db
+      TB_DB_PASSWORD: ${TB_DB_PASSWORD}
+      TB_LDAP_BIND_PASSWORD: ${TB_LDAP_BIND_PASSWORD:-}
+    volumes:
+      - ./config.json:/etc/telefonbuch/config.json:ro
+      - tb-data:/data            # JSON-Betrieb / JSON-Kopie: storage.jsonPath = /data/telefonbuch.json
+      - ./firma-root-ca.pem:/etc/telefonbuch/firma-root-ca.pem:ro
+    ports:
+      - "127.0.0.1:8080:8080"   # nur lokal – davor einen HTTPS-Reverse-Proxy setzen
+
+volumes:
+  db-data:
+  tb-data:

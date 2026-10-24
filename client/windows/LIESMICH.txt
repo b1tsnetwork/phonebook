@@ -1,0 +1,17 @@
+﻿Telefonbuch – Symbol im Infobereich (Windows)
+=============================================
+
+Installieren:   install.cmd doppelklicken (keine Administratorrechte nötig)
+Entfernen:      uninstall.cmd doppelklicken
+
+Danach gibt es
+  - ein Symbol im Infobereich (unten rechts, ggf. unter "^"):
+      Klick         -> Telefonbuch öffnen bzw. offenes Fenster nach vorne holen
+      Rechtsklick   -> Suchen …, Mit Windows starten, Beenden
+  - "Telefonbuch" im Startmenü
+
+Das Telefonbuch öffnet sich in einem eigenen Fenster (Microsoft Edge / Chrome im App-Modus).
+Lieber im normalen Browser:  install.cmd bearbeiten und  -Mode browser  anhängen.
+
+Es handelt sich um reine PowerShell-Skripte (kein Programm, nichts zu signieren),
+installiert nach  %LOCALAPPDATA%\Programs\Telefonbuch.

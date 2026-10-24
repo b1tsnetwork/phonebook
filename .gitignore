@@ -1,0 +1,7 @@
+telefonbuch
+config.json
+*.pem
+.env
+telefonbuch.json*
+audit.json*
+demo.json*

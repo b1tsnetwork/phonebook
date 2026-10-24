@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="same-origin">
+  <title>Telefonbuch</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <!-- Anmeldung -->
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="login-card" autocomplete="on">
+      <canvas id="login-head" width="120" height="120" aria-hidden="true"></canvas>
+      <h1>Telefonbuch</h1>
+      <p class="muted">Bitte mit dem Windows-Konto anmelden.</p>
+      <label class="field"><span>Benutzername</span><input name="username" autocomplete="username" required maxlength="128" autocapitalize="none" spellcheck="false"></label>
+      <label class="field"><span>Passwort</span><input name="password" type="password" autocomplete="current-password" required maxlength="512"></label>
+      <p id="login-dev" class="dev-hint" hidden>⚠ DEV-Modus: lokales Admin-Konto aktiv (Benutzer und Passwort stehen im Server-Log).</p>
+      <p id="login-err" class="err" role="alert" hidden></p>
+      <button type="submit" class="primary big">Anmelden</button>
+    </form>
+  </div>
+
+  <!-- Hauptansicht -->
+  <div id="main" class="app" hidden>
+    <header class="topbar">
+      <div class="brand"><span class="logo" aria-hidden="true"></span><span>Telefonbuch</span><span id="dev-flag" class="badge dev" title="Lokales Admin-Konto am AD vorbei ist aktiv – nur für Entwicklung/Test" hidden>⚠ DEV-Admin aktiv</span><span id="storage-flag" class="badge json offline" title="Die Datenbank ist nicht erreichbar – angezeigt wird die JSON-Kopie, Änderungen sind gesperrt" hidden>📄 Offline-Bestand</span></div>
+      <div id="filterbar" class="filterbar">
+        <div id="chips" class="chips"></div>
+        <button id="btn-reset" type="button" class="linkish" hidden title="Alle Filter und die Auswahl zurücksetzen (Esc)">✕ Alles zurücksetzen</button>
+      </div>
+      <button id="help-btn" type="button" class="icon help-btn" title="Hilfe (?)" aria-label="Hilfe" hidden>❔</button>
+      <button id="user-btn" type="button" class="user-btn" aria-haspopup="menu">
+        <img id="user-av" alt="" width="32" height="32">
+        <span id="user-name"></span>
+        <span id="admin-flag" class="badge admin" hidden>Admin</span>
+        <span id="user-caret" aria-hidden="true">▾</span>
+      </button>
+    </header>
+
+    <nav id="mtabs" class="mtabs" aria-label="Ansicht">
+      <button type="button" data-tab="people" class="active">👥 Personen <span id="mt-people" class="cnt"></span></button>
+      <button type="button" data-tab="tags">🏷 Schlagworte <span id="mt-tags" class="cnt"></span></button>
+    </nav>
+
+    <main class="panes">
+      <section class="pane left" aria-label="Personen">
+        <div class="thead">
+          <div class="cols labels">
+            <button type="button" class="col-label c-name" data-sort="name">Name <small>(Nachname, Vorname)</small></button>
+            <button type="button" class="col-label c-phone" data-sort="phone">Telefon</button>
+            <button type="button" class="col-label c-mobile" data-sort="mobile">Mobil</button>
+            <button type="button" class="col-label c-room" data-sort="room">Raum</button>
+            <button type="button" class="col-label c-amt" data-sort="amt">Amt</button>
+          </div>
+          <div class="sortbar">
+            <label for="sort-sel">Sortieren:</label>
+            <select id="sort-sel" aria-label="Sortieren nach">
+              <option value="name">Name</option><option value="phone">Telefon</option><option value="mobile">Mobil</option><option value="room">Raum</option><option value="amt">Amt</option>
+            </select>
+            <button type="button" id="sort-dir" class="icon" title="Reihenfolge umkehren" aria-label="Reihenfolge umkehren">▲</button>
+          </div>
+          <div class="cols filters">
+            <input id="q-main" class="f-main" type="search" placeholder="🔍 Name, Telefon oder Mobil …" aria-label="Name, Telefon oder Mobil suchen" autocomplete="off">
+            <input id="q-room" class="f-room" type="search" placeholder="Raum …" aria-label="Raum suchen" autocomplete="off">
+            <input id="q-amt" class="f-amt" type="search" placeholder="Amt …" aria-label="Amt suchen" autocomplete="off">
+          </div>
+        </div>
+        <div id="people" class="list" role="listbox" aria-multiselectable="true" aria-label="Personen"></div>
+        <div id="people-empty" class="empty" hidden>Niemand gefunden.</div>
+        <div id="people-foot" class="foot"></div>
+      </section>
+
+      <section class="pane right" aria-label="Schlagworte">
+        <div id="card"></div>
+        <div class="thead tag-head">
+          <input id="q-tag" type="search" placeholder="🏷 Schlagwort suchen … (setzt alles zurück)" aria-label="Schlagwort suchen" autocomplete="off">
+          <div id="cat-filter" class="seg small" role="group" aria-label="Kategorie"></div>
+        </div>
+        <div id="tags" class="list tags" role="listbox" aria-multiselectable="true" aria-label="Schlagworte"></div>
+        <div id="tags-empty" class="empty" hidden></div>
+        <div id="tags-foot" class="foot"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="menu" class="menu" role="menu" hidden></div>
+  <dialog id="dlg"></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
