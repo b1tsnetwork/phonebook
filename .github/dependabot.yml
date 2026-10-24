@@ -1,0 +1,56 @@
+# Dependabot: wöchentliche Updates für Go-Module, GitHub Actions und Docker-Images.
+# Kleinere Updates werden gebündelt (ein PR je Bereich), Major-Updates kommen einzeln.
+version: 2
+
+updates:
+  # Go-Module (go.mod / go.sum): mysql-Treiber, go-ldap und deren Abhängigkeiten
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(go)"
+    groups:
+      go-minor-patch:
+        update-types: [minor, patch]
+
+  # GitHub Actions im Workflow (checkout, setup-go, docker/*, attest)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    commit-message:
+      prefix: "deps(actions)"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Basis-Images im Dockerfile (golang-Build, distroless-Laufzeit)
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    commit-message:
+      prefix: "deps(docker)"
+
+  # docker-compose.yml (MySQL): auf der LTS-Linie 8.4 bleiben
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: monthly
+      timezone: Europe/Berlin
+    commit-message:
+      prefix: "deps(compose)"
+    ignore:
+      - dependency-name: mysql
+        update-types: [version-update:semver-major, version-update:semver-minor]

@@ -138,7 +138,18 @@ func (a *App) tryReconnect(ctx context.Context) bool {
 			sess = append(sess, *s)
 		}
 		old.mu.RUnlock()
+		now := time.Now().UTC()
 		for i := range sess {
+			// MySQL (strict mode) lehnt Nullzeiten ab
+			if sess[i].CreatedAt.IsZero() {
+				sess[i].CreatedAt = now
+			}
+			if sess[i].LastSeen.IsZero() {
+				sess[i].LastSeen = now
+			}
+			if sess[i].ExpiresAt.IsZero() {
+				continue
+			}
 			if err := ms.CreateSession(ctx, &sess[i]); err != nil && !isDuplicate(err) {
 				log.Printf("Sitzung übernehmen: %v", err)
 			}

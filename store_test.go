@@ -406,7 +406,7 @@ func TestFallbackReadOnly(t *testing.T) {
 	if err := fb.UpsertLocalUser(ctx, LocalUser{Username: "devadmin", PwHash: "x", IsAdmin: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fb.CreateSession(ctx, &SessionRec{IDHash: "s", Username: "devadmin", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+	if err := fb.CreateSession(ctx, &SessionRec{IDHash: "s", Username: "devadmin", CSRF: "c", CreatedAt: time.Now().UTC(), LastSeen: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	if after, _ := os.ReadFile(path); string(after) != string(before) {
