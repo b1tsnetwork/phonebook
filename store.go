@@ -68,6 +68,26 @@ type Store interface {
 	// Mit einem Eintrag (Person) bzw. dessen Amt geteilte Kontakte anderer Besitzer
 	ListSharedWith(ctx context.Context, employeeID int64, amt, exceptOwner string) ([]PrivateRec, error)
 
+	// Vertretungen, Abwesenheiten, Zuordnung zur Organisation
+	SetDeputies(ctx context.Context, id int64, deputies []int64) error    // ErrNotFound
+	SetAbsences(ctx context.Context, id int64, absences []Absence) error  // ErrNotFound
+	SetOrgUnit(ctx context.Context, ids []int64, unit int64) (int, error) // unit 0 = keine
+
+	// Organisation: Einheiten (Baum) und Einstellungen (z. B. Ebenen-Namen)
+	ListOrgUnits(ctx context.Context) ([]OrgUnit, error)
+	CreateOrgUnit(ctx context.Context, u OrgUnit) (int64, error)
+	UpdateOrgUnit(ctx context.Context, u OrgUnit) error // ErrNotFound
+	// Löscht eine Einheit; Untereinheiten und Personen wandern zur übergeordneten Einheit
+	DeleteOrgUnit(ctx context.Context, id int64) error
+	GetSetting(ctx context.Context, key string) (string, error) // "" = nicht gesetzt
+	SetSetting(ctx context.Context, key, value string) error
+
+	// Fehlermeldungen zu Einträgen
+	CreateReport(ctx context.Context, r Report) (int64, error)
+	ListReports(ctx context.Context, status string, limit int) ([]Report, error) // status "" = alle
+	UpdateReport(ctx context.Context, id int64, status, by, note string) error   // ErrNotFound
+	CountReports(ctx context.Context, status, reporter string) (int, error)      // reporter "" = alle
+
 	// Protokoll & AD-Abgleich
 	AddAudit(ctx context.Context, e AuditEntry) error
 	ListAudit(ctx context.Context, q string, limit int) ([]AuditEntry, error)
@@ -139,6 +159,64 @@ type EmployeeRec struct {
 	CreatedAt    time.Time       `json:"createdAt"`
 	UpdatedAt    time.Time       `json:"updatedAt"`
 	LastSyncedAt *time.Time      `json:"lastSyncedAt,omitempty"`
+	OrgUnit      int64           `json:"orgUnit,omitempty"`  // Einheit im Organigramm (0 = keine)
+	Deputies     []int64         `json:"deputies,omitempty"` // Vertretungen (Einträge, Reihenfolge zählt)
+	Absences     []Absence       `json:"absences,omitempty"` // geplante/aktuelle Abwesenheiten
+}
+
+// Absence: Abwesenheit (bewusst ohne Grund – Datensparsamkeit). Datumsangaben JJJJ-MM-TT, inklusive.
+type Absence struct {
+	From     string  `json:"from"`
+	To       string  `json:"to"`
+	Deputies []int64 `json:"deputies,omitempty"` // abweichende Vertretung für diesen Zeitraum
+}
+
+// OrgUnit: Knoten im Organigramm (Ebene = Tiefe im Baum, Namen der Ebenen unter Setting "orgLevels")
+type OrgUnit struct {
+	ID       int64   `json:"id"`
+	Parent   int64   `json:"parent,omitempty"`
+	Name     string  `json:"name"`
+	Short    string  `json:"short,omitempty"`
+	Sort     int     `json:"sort"`
+	Leaders  []int64 `json:"leaders,omitempty"`
+	Deputies []int64 `json:"deputies,omitempty"`
+}
+
+// Report: Meldung fehlerhafter Daten
+type Report struct {
+	ID           int64      `json:"id"`
+	EmployeeID   int64      `json:"employeeId,omitempty"`
+	Target       string     `json:"target"` // Name des Eintrags zum Zeitpunkt der Meldung
+	Field        string     `json:"field"`
+	Suggestion   string     `json:"suggestion,omitempty"`
+	Message      string     `json:"message,omitempty"`
+	Reporter     string     `json:"reporter"`
+	ReporterName string     `json:"reporterName,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	Status       string     `json:"status"` // open, done, rejected
+	ResolvedBy   string     `json:"resolvedBy,omitempty"`
+	ResolvedAt   *time.Time `json:"resolvedAt,omitempty"`
+	Note         string     `json:"note,omitempty"`
+}
+
+// Schlüssel für Einstellungen
+const settingOrgLevels = "orgLevels" // JSON-Liste der Ebenen-Namen, z. B. ["Dezernat","Amt","Sachgebiet","Team"]
+
+// removeID entfernt id aus einer Liste (nil bleibt nil)
+func removeID(list []int64, id int64) ([]int64, bool) {
+	out := list[:0:0]
+	hit := false
+	for _, x := range list {
+		if x == id {
+			hit = true
+			continue
+		}
+		out = append(out, x)
+	}
+	if len(out) == 0 {
+		out = nil
+	}
+	return out, hit
 }
 
 func (e *EmployeeRec) fields() contactFields {
@@ -233,18 +311,21 @@ type SyncUpdate struct {
 
 // Snapshot ist das Format der JSON-Datenhaltung und des Exports.
 type Snapshot struct {
-	Format     string        `json:"format"` // "telefonbuch"
-	Version    int           `json:"version"`
-	ExportedAt time.Time     `json:"exportedAt"`
-	Source     string        `json:"source,omitempty"` // woher die Daten stammen (z. B. "mysql")
-	ImportedAt *time.Time    `json:"importedFromMySQLAt,omitempty"`
-	Employees  []EmployeeRec `json:"employees"`
-	Categories []Category    `json:"categories,omitempty"`
-	Tags       []TagRec      `json:"tags"`
-	Private    []PrivateRec  `json:"privateContacts"`
-	LocalUsers []LocalUser   `json:"localUsers"`
-	Audit      []AuditEntry  `json:"audit,omitempty"` // im JSON-Betrieb in eigener Datei
-	SyncRuns   []SyncResult  `json:"syncRuns"`
+	Format     string            `json:"format"` // "telefonbuch"
+	Version    int               `json:"version"`
+	ExportedAt time.Time         `json:"exportedAt"`
+	Source     string            `json:"source,omitempty"` // woher die Daten stammen (z. B. "mysql")
+	ImportedAt *time.Time        `json:"importedFromMySQLAt,omitempty"`
+	Employees  []EmployeeRec     `json:"employees"`
+	Categories []Category        `json:"categories,omitempty"`
+	Tags       []TagRec          `json:"tags"`
+	Private    []PrivateRec      `json:"privateContacts"`
+	LocalUsers []LocalUser       `json:"localUsers"`
+	Audit      []AuditEntry      `json:"audit,omitempty"` // im JSON-Betrieb in eigener Datei
+	SyncRuns   []SyncResult      `json:"syncRuns"`
+	OrgUnits   []OrgUnit         `json:"orgUnits,omitempty"`
+	Settings   map[string]string `json:"settings,omitempty"`
+	Reports    []Report          `json:"reports,omitempty"`
 }
 
 const snapshotFormat = "telefonbuch"
@@ -313,6 +394,61 @@ func (s *Snapshot) validate() error {
 			} else if len(out) < len(e.Avatar) {
 				s.Employees[i].Avatar = json.RawMessage(out) // kompakt (einfarbige Seiten)
 			}
+		}
+	}
+	// Organisation: IDs eindeutig, Eltern vorhanden, keine Zyklen; Verweise auf Einträge bereinigen
+	units := map[int64]*OrgUnit{}
+	for i := range s.OrgUnits {
+		u := &s.OrgUnits[i]
+		if u.ID <= 0 || units[u.ID] != nil {
+			return fmt.Errorf("Organisationseinheit %d ungültig/doppelt", u.ID)
+		}
+		units[u.ID] = u
+	}
+	keepEmp := func(l []int64) []int64 {
+		var out []int64
+		for _, id := range l {
+			if empIDs[id] {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	for _, u := range units {
+		if u.Parent != 0 && units[u.Parent] == nil {
+			u.Parent = 0
+		}
+		u.Leaders, u.Deputies = keepEmp(u.Leaders), keepEmp(u.Deputies)
+	}
+	for _, u := range units { // Zyklus → an die Wurzel hängen
+		seen := map[int64]bool{u.ID: true}
+		for p := u.Parent; p != 0; p = units[p].Parent {
+			if seen[p] {
+				u.Parent = 0
+				break
+			}
+			seen[p] = true
+		}
+	}
+	for i := range s.Employees {
+		e := &s.Employees[i]
+		if e.OrgUnit != 0 && units[e.OrgUnit] == nil {
+			e.OrgUnit = 0
+		}
+		e.Deputies = keepEmp(e.Deputies)
+		for j := range e.Absences {
+			e.Absences[j].Deputies = keepEmp(e.Absences[j].Deputies)
+		}
+	}
+	repIDs := map[int64]bool{}
+	for i := range s.Reports {
+		r := &s.Reports[i]
+		if r.ID <= 0 || repIDs[r.ID] {
+			return fmt.Errorf("Meldung %d ungültig/doppelt", r.ID)
+		}
+		repIDs[r.ID] = true
+		if r.EmployeeID != 0 && !empIDs[r.EmployeeID] {
+			r.EmployeeID = 0
 		}
 	}
 	privIDs := map[int64]bool{}

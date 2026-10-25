@@ -32,6 +32,9 @@ type Employee struct {
 	Hidden    bool            `json:"hidden"`
 	Avatar    json.RawMessage `json:"avatar,omitempty"`
 	Tags      []int64         `json:"tags"`
+	OrgUnit   int64           `json:"orgUnit,omitempty"`
+	Deputies  []int64         `json:"deputies,omitempty"`
+	Absences  []Absence       `json:"absences,omitempty"`
 }
 
 type PrivateContact struct {
@@ -203,7 +206,8 @@ func (a *App) meJSON(s *Session) map[string]any {
 
 // siteJSON: öffentliche Angaben für die Oberfläche (auch ohne Anmeldung)
 func (a *App) siteJSON() map[string]any {
-	out := map[string]any{"publicDirectory": a.cfg.Auth.PublicDirectory, "devAdmin": a.cfg.Auth.DevAdmin, "storage": a.st().Kind(), "offline": a.offline.Load()}
+	out := map[string]any{"publicDirectory": a.cfg.Auth.PublicDirectory, "devAdmin": a.cfg.Auth.DevAdmin, "storage": a.st().Kind(), "offline": a.offline.Load(),
+		"absences": a.absencesMode(), "reports": a.cfg.reportsEnabled()}
 	if ro, ok := a.st().(*readOnlyStore); ok && a.offline.Load() {
 		out["offlineSince"] = ro.savedAt // Stand der Kopie
 	}
@@ -233,11 +237,17 @@ func (a *App) handleDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	emps := make([]Employee, 0, len(recs))
+	today := a.cfg.today()
+	showAbs := a.absencesMode() == "all" || (a.absencesMode() == "users" && !guest)
 	counts := map[int64]int{}
 	for i := range recs {
 		e := &recs[i]
 		out := Employee{ID: e.ID, Username: e.Username, LastName: e.LastName, FirstName: e.FirstName, Phone: e.Phone, Mobile: e.Mobile,
-			Room: e.Room, Amt: e.Amt, Email: e.Email, Source: e.Source, Active: e.Active, Hidden: e.Hidden, Avatar: e.Avatar, Tags: e.Tags}
+			Room: e.Room, Amt: e.Amt, Email: e.Email, Source: e.Source, Active: e.Active, Hidden: e.Hidden, Avatar: e.Avatar, Tags: e.Tags,
+			OrgUnit: e.OrgUnit, Deputies: e.Deputies}
+		if showAbs {
+			out.Absences = currentAbsences(e.Absences, today)
+		}
 		if !s.IsAdmin && e.ID != s.EmployeeID {
 			out.Username = ""
 		}
@@ -287,7 +297,17 @@ func (a *App) handleDirectory(w http.ResponseWriter, r *http.Request) {
 		}
 		me = a.meJSON(s)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"employees": emps, "tags": visible, "categories": cats, "private": priv, "shared": shared, "me": me, "site": a.siteJSON()})
+	units, err := a.st().ListOrgUnits(ctx)
+	if err != nil {
+		dbFail(w, err)
+		return
+	}
+	out := map[string]any{"employees": emps, "tags": visible, "categories": cats, "private": priv, "shared": shared, "me": me, "site": a.siteJSON(),
+		"org": map[string]any{"levels": a.orgLevels(ctx), "units": units}, "today": today}
+	if s.IsAdmin && a.cfg.reportsEnabled() {
+		out["openReports"], _ = a.st().CountReports(ctx, "open", "")
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // SharedContact: privater Kontakt eines anderen, der für mich freigegeben wurde (nur lesen)
@@ -384,6 +404,49 @@ func (a *App) handleSetTags(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err, "Eintrag nicht gefunden", "")
 		return
 	}
+	if !s.IsAdmin {
+		// Leitungs-/Vertretungs-Schlagworte (Organigramm) vergeben nur Admins
+		prot := a.protectedTags(ctx)
+		if len(prot) > 0 {
+			all, err := a.st().ListTags(ctx)
+			if err != nil {
+				dbFail(w, err)
+				return
+			}
+			byName := map[string]int64{}
+			for _, t := range all {
+				byName[strings.ToLower(t.Name)] = t.ID
+			}
+			had := map[int64]bool{}
+			for _, t := range e.Tags {
+				if prot[t] {
+					had[t] = true
+				}
+			}
+			want := map[int64]bool{}
+			for _, t := range in {
+				if tid := byName[strings.ToLower(t.Name)]; prot[tid] {
+					want[tid] = true
+				}
+			}
+			for t := range had {
+				if !want[t] {
+					// stillschweigend behalten statt Fehler: die Oberfläche zeigt sie gesperrt an
+					for _, x := range all {
+						if x.ID == t {
+							in = append(in, TagInput{Name: x.Name, Category: x.Category})
+						}
+					}
+				}
+			}
+			for t := range want {
+				if !had[t] {
+					jsonError(w, http.StatusForbidden, "Leitungs- und Vertretungs-Schlagworte des Organigramms vergeben nur Administratoren")
+					return
+				}
+			}
+		}
+	}
 	ids, err := a.st().SetEmployeeTags(ctx, id, in, s.Username, s.IsAdmin || a.cfg.Features.UserCreatesTags)
 	if err != nil {
 		storeErr(w, err, "Eintrag nicht gefunden", "")
@@ -436,6 +499,29 @@ type employeeInput struct {
 	contactFields
 	Username *string `json:"username"`
 	Hidden   bool    `json:"hidden"`
+	OrgUnit  *int64  `json:"orgUnit"` // nil = unverändert, 0 = keine
+}
+
+// applyOrgUnit setzt die Einheit, wenn angegeben (und vorhanden)
+func (a *App) applyOrgUnit(ctx context.Context, id int64, unit *int64) error {
+	if unit == nil {
+		return nil
+	}
+	if *unit != 0 {
+		units, err := a.st().ListOrgUnits(ctx)
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, u := range units {
+			found = found || u.ID == *unit
+		}
+		if !found {
+			return errors.New("Organisationseinheit existiert nicht")
+		}
+	}
+	_, err := a.st().SetOrgUnit(ctx, []int64{id}, *unit)
+	return err
 }
 
 func cleanUsername(p *string) (string, error) {
@@ -478,6 +564,10 @@ func (a *App) handleCreateEmployee(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.ID = id
+	if err := a.applyOrgUnit(r.Context(), id, in.OrgUnit); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	a.audit(r, s.Username, "employee_create", empLabel(e), "")
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "id": id})
 }
@@ -536,6 +626,10 @@ func (a *App) handleUpdateEmployee(w http.ResponseWriter, r *http.Request) {
 	cur.UpdatedAt = time.Now().UTC()
 	if err := a.st().UpdateEmployee(ctx, cur); err != nil {
 		storeErr(w, err, "Eintrag nicht gefunden", dupUser)
+		return
+	}
+	if err := a.applyOrgUnit(ctx, id, in.OrgUnit); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	a.audit(r, s.Username, "employee_update", empLabel(cur), diffContact(old, in.contactFields))
@@ -671,6 +765,7 @@ func (a *App) handleMergeTag(w http.ResponseWriter, r *http.Request) {
 		storeErr(w, err, "Schlagwort nicht gefunden", "")
 		return
 	}
+	a.replaceLevelTag(r.Context(), id, in.Into)
 	a.audit(r, s.Username, "tag_merge", from, "→ "+into)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

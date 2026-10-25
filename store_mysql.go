@@ -110,15 +110,37 @@ func (m *mysqlStore) TouchLocalUser(ctx context.Context, user string, t time.Tim
 
 // ---------- Einträge ----------
 
-const empCols = `id, COALESCE(username,''), last_name, first_name, phone, mobile, room, amt, email, source, COALESCE(ad_guid,''), COALESCE(ad_dn,''), active, hidden, COALESCE(avatar,''), created_at, updated_at, last_synced_at`
+const empCols = `id, COALESCE(username,''), last_name, first_name, phone, mobile, room, amt, email, source, COALESCE(ad_guid,''), COALESCE(ad_dn,''), active, hidden, COALESCE(avatar,''), created_at, updated_at, last_synced_at, COALESCE(org_unit_id,0), COALESCE(deputies,''), COALESCE(absences,'')`
+
+// jsonCol: Liste als JSON-Text (NULL, wenn leer)
+func jsonCol[T any](v []T) any {
+	if len(v) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+func parseCol[T any](s string) []T {
+	if s == "" {
+		return nil
+	}
+	var v []T
+	if json.Unmarshal([]byte(s), &v) != nil || len(v) == 0 {
+		return nil
+	}
+	return v
+}
 
 type scanner interface{ Scan(...any) error }
 
 func scanEmp(r scanner) (EmployeeRec, error) {
 	var e EmployeeRec
-	var av string
+	var av, deps, abs string
 	var ls sql.NullTime
-	err := r.Scan(&e.ID, &e.Username, &e.LastName, &e.FirstName, &e.Phone, &e.Mobile, &e.Room, &e.Amt, &e.Email, &e.Source, &e.ADGUID, &e.ADDN, &e.Active, &e.Hidden, &av, &e.CreatedAt, &e.UpdatedAt, &ls)
+	err := r.Scan(&e.ID, &e.Username, &e.LastName, &e.FirstName, &e.Phone, &e.Mobile, &e.Room, &e.Amt, &e.Email, &e.Source, &e.ADGUID, &e.ADDN, &e.Active, &e.Hidden, &av, &e.CreatedAt, &e.UpdatedAt, &ls, &e.OrgUnit, &deps, &abs)
+	e.Deputies = parseCol[int64](deps)
+	e.Absences = parseCol[Absence](abs)
 	if av != "" {
 		e.Avatar = json.RawMessage(av)
 	}
@@ -200,8 +222,8 @@ func (m *mysqlStore) EmployeeIDByUsername(ctx context.Context, user string) (int
 }
 
 func (m *mysqlStore) CreateEmployee(ctx context.Context, e *EmployeeRec) (int64, error) {
-	res, err := m.db.ExecContext(ctx, `INSERT INTO employees (username, last_name, first_name, phone, mobile, room, amt, email, source, ad_guid, ad_dn, active, hidden, avatar, created_at, updated_at, last_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		nullStr(e.Username), e.LastName, e.FirstName, e.Phone, e.Mobile, e.Room, e.Amt, e.Email, e.Source, nullStr(e.ADGUID), nullStr(e.ADDN), e.Active, e.Hidden, nullRaw(e.Avatar), e.CreatedAt, e.UpdatedAt, e.LastSyncedAt)
+	res, err := m.db.ExecContext(ctx, `INSERT INTO employees (username, last_name, first_name, phone, mobile, room, amt, email, source, ad_guid, ad_dn, active, hidden, avatar, created_at, updated_at, last_synced_at, org_unit_id, deputies, absences) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		nullStr(e.Username), e.LastName, e.FirstName, e.Phone, e.Mobile, e.Room, e.Amt, e.Email, e.Source, nullStr(e.ADGUID), nullStr(e.ADDN), e.Active, e.Hidden, nullRaw(e.Avatar), e.CreatedAt, e.UpdatedAt, e.LastSyncedAt, nullID(e.OrgUnit), jsonCol(e.Deputies), jsonCol(e.Absences))
 	if isDuplicate(err) {
 		return 0, ErrDuplicate
 	}
@@ -263,6 +285,12 @@ func (m *mysqlStore) DeleteEmployee(ctx context.Context, id int64) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE reports SET employee_id = NULL WHERE employee_id = ?`, id); err != nil {
+		return err
+	}
+	if err := removeRefsTx(ctx, tx, id); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -864,6 +892,28 @@ func (m *mysqlStore) Export(ctx context.Context) (*Snapshot, error) {
 	if s.SyncRuns, err = m.ListSyncRuns(ctx, jsonSyncRunsMax); err != nil {
 		return nil, err
 	}
+	if s.OrgUnits, err = m.ListOrgUnits(ctx); err != nil {
+		return nil, err
+	}
+	if s.Reports, err = m.ListReports(ctx, "", 0); err != nil {
+		return nil, err
+	}
+	rows, err = m.db.QueryContext(ctx, `SELECT k, v FROM settings`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if s.Settings == nil {
+			s.Settings = map[string]string{}
+		}
+		s.Settings[k] = v
+	}
+	rows.Close()
 	s.normalize()
 	return s, nil
 }
@@ -877,8 +927,25 @@ func (m *mysqlStore) Import(ctx context.Context, s *Snapshot) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, t := range []string{"employee_tags", "employees", "tags", "private_shares", "private_contacts", "tag_categories", "local_users", "audit_log", "sync_runs", "sessions"} {
+	for _, t := range []string{"employee_tags", "employees", "tags", "private_shares", "private_contacts", "tag_categories", "local_users", "audit_log", "sync_runs", "sessions", "org_units", "settings", "reports"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
+			return err
+		}
+	}
+	for _, u := range s.OrgUnits {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO org_units (id, parent_id, name, short_name, sort, leaders, deputies) VALUES (?,?,?,?,?,?,?)`,
+			u.ID, nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies)); err != nil {
+			return err
+		}
+	}
+	for k, v := range s.Settings {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO settings (k, v) VALUES (?,?)`, k, v); err != nil {
+			return err
+		}
+	}
+	for _, r := range s.Reports {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (id, employee_id, target, field, suggestion, message, reporter, reporter_name, created_at, status, resolved_by, resolved_at, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			r.ID, nullID(r.EmployeeID), r.Target, r.Field, r.Suggestion, r.Message, r.Reporter, r.ReporterName, r.CreatedAt, r.Status, r.ResolvedBy, r.ResolvedAt, r.Note); err != nil {
 			return err
 		}
 	}
@@ -893,8 +960,8 @@ func (m *mysqlStore) Import(ctx context.Context, s *Snapshot) error {
 		}
 	}
 	for _, e := range s.Employees {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO employees (id, username, last_name, first_name, phone, mobile, room, amt, email, source, ad_guid, ad_dn, active, hidden, avatar, created_at, updated_at, last_synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			e.ID, nullStr(e.Username), e.LastName, e.FirstName, e.Phone, e.Mobile, e.Room, e.Amt, e.Email, e.Source, nullStr(e.ADGUID), nullStr(e.ADDN), e.Active, e.Hidden, nullRaw(e.Avatar), e.CreatedAt, e.UpdatedAt, e.LastSyncedAt); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO employees (id, username, last_name, first_name, phone, mobile, room, amt, email, source, ad_guid, ad_dn, active, hidden, avatar, created_at, updated_at, last_synced_at, org_unit_id, deputies, absences) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			e.ID, nullStr(e.Username), e.LastName, e.FirstName, e.Phone, e.Mobile, e.Room, e.Amt, e.Email, e.Source, nullStr(e.ADGUID), nullStr(e.ADDN), e.Active, e.Hidden, nullRaw(e.Avatar), e.CreatedAt, e.UpdatedAt, e.LastSyncedAt, nullID(e.OrgUnit), jsonCol(e.Deputies), jsonCol(e.Absences)); err != nil {
 			return err
 		}
 		for _, t := range e.Tags {
@@ -932,4 +999,247 @@ func (m *mysqlStore) Import(ctx context.Context, s *Snapshot) error {
 		}
 	}
 	return tx.Commit()
+}
+
+func nullID(id int64) any {
+	if id <= 0 {
+		return nil
+	}
+	return id
+}
+
+// removeRefsTx entfernt einen gelöschten Eintrag aus Vertretungen, Abwesenheits-Vertretungen und Einheiten.
+func removeRefsTx(ctx context.Context, tx *sql.Tx, id int64) error {
+	type row struct {
+		id         int64
+		deps, abss string
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(deputies,''), COALESCE(absences,'') FROM employees WHERE deputies IS NOT NULL OR absences IS NOT NULL`)
+	if err != nil {
+		return err
+	}
+	var list []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.deps, &r.abss); err != nil {
+			rows.Close()
+			return err
+		}
+		list = append(list, r)
+	}
+	rows.Close()
+	for _, r := range list {
+		deps, hit := removeID(parseCol[int64](r.deps), id)
+		abs := parseCol[Absence](r.abss)
+		for i := range abs {
+			var h bool
+			abs[i].Deputies, h = removeID(abs[i].Deputies, id)
+			hit = hit || h
+		}
+		if hit {
+			if _, err := tx.ExecContext(ctx, `UPDATE employees SET deputies = ?, absences = ? WHERE id = ?`, jsonCol(deps), jsonCol(abs), r.id); err != nil {
+				return err
+			}
+		}
+	}
+	urows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(leaders,''), COALESCE(deputies,'') FROM org_units WHERE leaders IS NOT NULL OR deputies IS NOT NULL`)
+	if err != nil {
+		return err
+	}
+	list = list[:0]
+	for urows.Next() {
+		var r row
+		if err := urows.Scan(&r.id, &r.deps, &r.abss); err != nil {
+			urows.Close()
+			return err
+		}
+		list = append(list, r)
+	}
+	urows.Close()
+	for _, r := range list {
+		l, h1 := removeID(parseCol[int64](r.deps), id)
+		d, h2 := removeID(parseCol[int64](r.abss), id)
+		if h1 || h2 {
+			if _, err := tx.ExecContext(ctx, `UPDATE org_units SET leaders = ?, deputies = ? WHERE id = ?`, jsonCol(l), jsonCol(d), r.id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ---------- Vertretungen, Abwesenheiten, Organisation ----------
+
+func (m *mysqlStore) SetDeputies(ctx context.Context, id int64, deps []int64) error {
+	res, err := m.db.ExecContext(ctx, `UPDATE employees SET deputies = ? WHERE id = ?`, jsonCol(deps), id)
+	if err != nil {
+		return err
+	}
+	return m.mustExist(ctx, res, `SELECT 1 FROM employees WHERE id = ?`, id)
+}
+
+func (m *mysqlStore) SetAbsences(ctx context.Context, id int64, abs []Absence) error {
+	res, err := m.db.ExecContext(ctx, `UPDATE employees SET absences = ? WHERE id = ?`, jsonCol(abs), id)
+	if err != nil {
+		return err
+	}
+	return m.mustExist(ctx, res, `SELECT 1 FROM employees WHERE id = ?`, id)
+}
+
+func (m *mysqlStore) SetOrgUnit(ctx context.Context, ids []int64, unit int64) (int, error) {
+	n := 0
+	for _, id := range ids {
+		res, err := m.db.ExecContext(ctx, `UPDATE employees SET org_unit_id = ? WHERE id = ?`, nullID(unit), id)
+		if err != nil {
+			return n, err
+		}
+		k, _ := res.RowsAffected()
+		n += int(k)
+	}
+	return n, nil
+}
+
+func (m *mysqlStore) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
+	rows, err := m.db.QueryContext(ctx, `SELECT id, COALESCE(parent_id,0), name, short_name, sort, COALESCE(leaders,''), COALESCE(deputies,'') FROM org_units ORDER BY sort, name, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []OrgUnit{}
+	for rows.Next() {
+		var u OrgUnit
+		var l, d string
+		if err := rows.Scan(&u.ID, &u.Parent, &u.Name, &u.Short, &u.Sort, &l, &d); err != nil {
+			return nil, err
+		}
+		u.Leaders, u.Deputies = parseCol[int64](l), parseCol[int64](d)
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (m *mysqlStore) CreateOrgUnit(ctx context.Context, u OrgUnit) (int64, error) {
+	res, err := m.db.ExecContext(ctx, `INSERT INTO org_units (parent_id, name, short_name, sort, leaders, deputies, created_at) VALUES (?,?,?,?,?,?,?)`,
+		nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), time.Now().UTC())
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (m *mysqlStore) UpdateOrgUnit(ctx context.Context, u OrgUnit) error {
+	res, err := m.db.ExecContext(ctx, `UPDATE org_units SET parent_id = ?, name = ?, short_name = ?, sort = ?, leaders = ?, deputies = ? WHERE id = ?`,
+		nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), u.ID)
+	if err != nil {
+		return err
+	}
+	return m.mustExist(ctx, res, `SELECT 1 FROM org_units WHERE id = ?`, u.ID)
+}
+
+func (m *mysqlStore) DeleteOrgUnit(ctx context.Context, id int64) error {
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var parent int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(parent_id,0) FROM org_units WHERE id = ?`, id).Scan(&parent); errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE org_units SET parent_id = ? WHERE parent_id = ?`, nullID(parent), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE employees SET org_unit_id = ? WHERE org_unit_id = ?`, nullID(parent), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM org_units WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (m *mysqlStore) GetSetting(ctx context.Context, key string) (string, error) {
+	var v string
+	err := m.db.QueryRowContext(ctx, `SELECT v FROM settings WHERE k = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+func (m *mysqlStore) SetSetting(ctx context.Context, key, value string) error {
+	_, err := m.db.ExecContext(ctx, `INSERT INTO settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)`, key, value)
+	return err
+}
+
+// ---------- Fehlermeldungen ----------
+
+func (m *mysqlStore) CreateReport(ctx context.Context, r Report) (int64, error) {
+	res, err := m.db.ExecContext(ctx, `INSERT INTO reports (employee_id, target, field, suggestion, message, reporter, reporter_name, created_at, status) VALUES (?,?,?,?,?,?,?,?,'open')`,
+		nullID(r.EmployeeID), r.Target, r.Field, r.Suggestion, r.Message, r.Reporter, r.ReporterName, r.CreatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (m *mysqlStore) ListReports(ctx context.Context, status string, limit int) ([]Report, error) {
+	q := `SELECT id, COALESCE(employee_id,0), target, field, suggestion, message, reporter, reporter_name, created_at, status, resolved_by, resolved_at, note FROM reports`
+	args := []any{}
+	if status != "" {
+		q += ` WHERE status = ?`
+		args = append(args, status)
+	}
+	q += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := m.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Report{}
+	for rows.Next() {
+		var r Report
+		var ra sql.NullTime
+		if err := rows.Scan(&r.ID, &r.EmployeeID, &r.Target, &r.Field, &r.Suggestion, &r.Message, &r.Reporter, &r.ReporterName, &r.CreatedAt, &r.Status, &r.ResolvedBy, &ra, &r.Note); err != nil {
+			return nil, err
+		}
+		if ra.Valid {
+			t := ra.Time
+			r.ResolvedAt = &t
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (m *mysqlStore) UpdateReport(ctx context.Context, id int64, status, by, note string) error {
+	var at any
+	if status != "open" {
+		at = time.Now().UTC()
+	} else {
+		by = ""
+	}
+	res, err := m.db.ExecContext(ctx, `UPDATE reports SET status = ?, resolved_by = ?, resolved_at = ?, note = ? WHERE id = ?`, status, by, at, note, id)
+	if err != nil {
+		return err
+	}
+	return m.mustExist(ctx, res, `SELECT 1 FROM reports WHERE id = ?`, id)
+}
+
+func (m *mysqlStore) CountReports(ctx context.Context, status, reporter string) (int, error) {
+	q := `SELECT COUNT(*) FROM reports WHERE status = ?`
+	args := []any{status}
+	if reporter != "" {
+		q += ` AND reporter = ?`
+		args = append(args, reporter)
+	}
+	var n int
+	err := m.db.QueryRowContext(ctx, q, args...).Scan(&n)
+	return n, err
 }

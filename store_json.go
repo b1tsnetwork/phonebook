@@ -31,6 +31,11 @@ type jsonStore struct {
 	tags       map[int64]*TagRec
 	priv       map[int64]*PrivateRec
 	cats       map[string]*Category
+	units      map[int64]*OrgUnit
+	settings   map[string]string
+	reports    []Report // älteste zuerst
+	nextUnit   int64
+	nextReport int64
 	users      map[string]*LocalUser
 	audit      []AuditEntry // älteste zuerst
 	syncRuns   []SyncResult // älteste zuerst
@@ -206,6 +211,21 @@ func (s *jsonStore) apply(snap *Snapshot) {
 		s.priv[p.ID] = &p
 		s.nextPriv = max(s.nextPriv, p.ID+1)
 	}
+	s.units, s.settings, s.reports = map[int64]*OrgUnit{}, map[string]string{}, nil
+	s.nextUnit, s.nextReport = 1, 1
+	for i := range snap.OrgUnits {
+		u := copyUnit(&snap.OrgUnits[i])
+		s.units[u.ID] = &u
+		s.nextUnit = max(s.nextUnit, u.ID+1)
+	}
+	for k, v := range snap.Settings {
+		s.settings[k] = v
+	}
+	for _, r := range snap.Reports {
+		s.reports = append(s.reports, r)
+		s.nextReport = max(s.nextReport, r.ID+1)
+	}
+	sort.Slice(s.reports, func(i, j int) bool { return s.reports[i].ID < s.reports[j].ID })
 	s.cats = map[string]*Category{}
 	for i := range snap.Categories {
 		c := snap.Categories[i]
@@ -234,10 +254,19 @@ func (s *jsonStore) apply(snap *Snapshot) {
 func (s *jsonStore) snapshot(withAudit bool) *Snapshot {
 	snap := &Snapshot{Format: snapshotFormat, Version: 1, ExportedAt: time.Now().UTC(), Source: s.source, ImportedAt: s.importedAt}
 	for _, e := range s.emp {
-		c := *e
-		c.Tags = append([]int64{}, e.Tags...)
-		snap.Employees = append(snap.Employees, c)
+		snap.Employees = append(snap.Employees, copyEmp(e))
 	}
+	for _, u := range s.units {
+		snap.OrgUnits = append(snap.OrgUnits, copyUnit(u))
+	}
+	sort.Slice(snap.OrgUnits, func(i, j int) bool { return snap.OrgUnits[i].ID < snap.OrgUnits[j].ID })
+	if len(s.settings) > 0 {
+		snap.Settings = map[string]string{}
+		for k, v := range s.settings {
+			snap.Settings[k] = v
+		}
+	}
+	snap.Reports = append([]Report(nil), s.reports...)
 	sort.Slice(snap.Employees, func(i, j int) bool { return snap.Employees[i].ID < snap.Employees[j].ID })
 	for _, t := range s.tags {
 		snap.Tags = append(snap.Tags, *t)
@@ -468,6 +497,33 @@ func (s *jsonStore) TouchLocalUser(ctx context.Context, user string, t time.Time
 func copyEmp(e *EmployeeRec) EmployeeRec {
 	c := *e
 	c.Tags = append([]int64{}, e.Tags...)
+	c.Deputies = copyIDs(e.Deputies)
+	c.Absences = copyAbsences(e.Absences)
+	return c
+}
+
+func copyIDs(l []int64) []int64 {
+	if len(l) == 0 {
+		return nil
+	}
+	return append([]int64{}, l...)
+}
+
+func copyAbsences(l []Absence) []Absence {
+	if len(l) == 0 {
+		return nil
+	}
+	out := make([]Absence, len(l))
+	for i, a := range l {
+		a.Deputies = copyIDs(a.Deputies)
+		out[i] = a
+	}
+	return out
+}
+
+func copyUnit(u *OrgUnit) OrgUnit {
+	c := *u
+	c.Leaders, c.Deputies = copyIDs(u.Leaders), copyIDs(u.Deputies)
 	return c
 }
 
@@ -580,6 +636,21 @@ func (s *jsonStore) DeleteEmployee(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	delete(s.emp, id)
+	for _, e := range s.emp {
+		e.Deputies, _ = removeID(e.Deputies, id)
+		for i := range e.Absences {
+			e.Absences[i].Deputies, _ = removeID(e.Absences[i].Deputies, id)
+		}
+	}
+	for _, u := range s.units {
+		u.Leaders, _ = removeID(u.Leaders, id)
+		u.Deputies, _ = removeID(u.Deputies, id)
+	}
+	for i := range s.reports {
+		if s.reports[i].EmployeeID == id {
+			s.reports[i].EmployeeID = 0
+		}
+	}
 	for _, p := range s.priv {
 		if p.Shares != nil {
 			p.Shares.Employees = slicesDeleteFunc(p.Shares.Employees, func(x int64) bool { return x == id })
@@ -1093,4 +1164,190 @@ func (s *jsonStore) info() map[string]any {
 		asize = fi.Size()
 	}
 	return map[string]any{"path": s.path, "size": size, "auditPath": s.auditPath, "auditSize": asize, "auditEntries": len(s.audit), "savedAt": s.savedAt, "source": s.source, "importedAt": s.importedAt, "employees": len(s.emp)}
+}
+
+// ---------- Vertretungen, Abwesenheiten, Organisation ----------
+
+func (s *jsonStore) SetDeputies(ctx context.Context, id int64, deps []int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.emp[id]
+	if e == nil {
+		return ErrNotFound
+	}
+	e.Deputies = copyIDs(deps)
+	return s.commit()
+}
+
+func (s *jsonStore) SetAbsences(ctx context.Context, id int64, abs []Absence) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.emp[id]
+	if e == nil {
+		return ErrNotFound
+	}
+	e.Absences = copyAbsences(abs)
+	return s.commit()
+}
+
+func (s *jsonStore) SetOrgUnit(ctx context.Context, ids []int64, unit int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, id := range ids {
+		if e := s.emp[id]; e != nil {
+			e.OrgUnit = unit
+			n++
+		}
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	return n, s.commit()
+}
+
+func (s *jsonStore) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]OrgUnit, 0, len(s.units))
+	for _, u := range s.units {
+		out = append(out, copyUnit(u))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Sort != out[j].Sort {
+			return out[i].Sort < out[j].Sort
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (s *jsonStore) CreateOrgUnit(ctx context.Context, u OrgUnit) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := copyUnit(&u)
+	c.ID = s.nextUnit
+	s.nextUnit++
+	s.units[c.ID] = &c
+	return c.ID, s.commit()
+}
+
+func (s *jsonStore) UpdateOrgUnit(ctx context.Context, u OrgUnit) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.units[u.ID] == nil {
+		return ErrNotFound
+	}
+	c := copyUnit(&u)
+	s.units[u.ID] = &c
+	return s.commit()
+}
+
+func (s *jsonStore) DeleteOrgUnit(ctx context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u := s.units[id]
+	if u == nil {
+		return ErrNotFound
+	}
+	for _, c := range s.units {
+		if c.Parent == id {
+			c.Parent = u.Parent
+		}
+	}
+	for _, e := range s.emp {
+		if e.OrgUnit == id {
+			e.OrgUnit = u.Parent
+		}
+	}
+	delete(s.units, id)
+	return s.commit()
+}
+
+func (s *jsonStore) GetSetting(ctx context.Context, key string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings[key], nil
+}
+
+func (s *jsonStore) SetSetting(ctx context.Context, key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settings[key] = value
+	return s.commit()
+}
+
+// ---------- Fehlermeldungen ----------
+
+const jsonReportsMax = 2000 // erledigte Meldungen werden darüber hinaus verworfen (älteste zuerst)
+
+func (s *jsonStore) CreateReport(ctx context.Context, r Report) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r.ID = s.nextReport
+	s.nextReport++
+	r.Status = "open"
+	r.ResolvedBy, r.ResolvedAt, r.Note = "", nil, ""
+	s.reports = append(s.reports, r)
+	if len(s.reports) > jsonReportsMax {
+		for i, x := range s.reports {
+			if x.Status != "open" {
+				s.reports = append(s.reports[:i], s.reports[i+1:]...)
+				break
+			}
+		}
+	}
+	return r.ID, s.commit()
+}
+
+func (s *jsonStore) ListReports(ctx context.Context, status string, limit int) ([]Report, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []Report{}
+	for i := len(s.reports) - 1; i >= 0; i-- { // neueste zuerst
+		r := s.reports[i]
+		if status != "" && r.Status != status {
+			continue
+		}
+		out = append(out, r)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *jsonStore) UpdateReport(ctx context.Context, id int64, status, by, note string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.reports {
+		r := &s.reports[i]
+		if r.ID != id {
+			continue
+		}
+		r.Status, r.Note = status, note
+		if status == "open" {
+			r.ResolvedBy, r.ResolvedAt = "", nil
+		} else {
+			now := time.Now().UTC()
+			r.ResolvedBy, r.ResolvedAt = by, &now
+		}
+		return s.commit()
+	}
+	return ErrNotFound
+}
+
+func (s *jsonStore) CountReports(ctx context.Context, status, reporter string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, r := range s.reports {
+		if r.Status == status && (reporter == "" || r.Reporter == reporter) {
+			n++
+		}
+	}
+	return n, nil
 }

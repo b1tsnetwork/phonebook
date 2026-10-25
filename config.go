@@ -88,7 +88,16 @@ type Config struct {
 		MaxPrivate      int  `json:"maxPrivateContacts"`
 		// Beim ersten LDAP-Login automatisch einen Telefonbucheintrag anlegen, falls keiner existiert
 		AutoCreateOnLogin bool `json:"autoCreateOnLogin"`
+		// Abwesenheiten: "all" (auch ohne Anmeldung sichtbar, Standard), "users" (nur Angemeldete), "off"
+		Absences string `json:"absences"`
+		// Fehlermeldungen zu Einträgen (Standard: an)
+		Reports            *bool `json:"reports"`
+		MaxOpenReportsUser int   `json:"maxOpenReportsPerUser"`
 	} `json:"features"`
+
+	// Zeitzone für Abwesenheiten („heute“), Standard Europe/Berlin
+	Timezone string `json:"timezone"`
+	loc      *time.Location
 
 	trusted []*net.IPNet
 }
@@ -288,6 +297,24 @@ func (c *Config) validate() error {
 			return errors.New("storage: Intervalle müssen mindestens 1m sein")
 		}
 	}
+	switch c.Features.Absences {
+	case "":
+		c.Features.Absences = "all"
+	case "all", "users", "off":
+	default:
+		return errors.New("features.absences muss all, users oder off sein")
+	}
+	if c.Features.MaxOpenReportsUser <= 0 {
+		c.Features.MaxOpenReportsUser = 20
+	}
+	if c.Timezone == "" {
+		c.Timezone = "Europe/Berlin"
+	}
+	loc, err := time.LoadLocation(c.Timezone)
+	if err != nil {
+		return fmt.Errorf("timezone: %w", err)
+	}
+	c.loc = loc
 	if c.Storage.FallbackRetry.Duration == 0 {
 		c.Storage.FallbackRetry = Duration{30 * time.Second}
 	}
@@ -400,4 +427,15 @@ func (c *Config) adLockedFields() []string {
 // fallbackEnabled: Rückfall auf die JSON-Kopie erlaubt?
 func (c *Config) fallbackEnabled() bool {
 	return c.Storage.Mode == "mysql" && c.Storage.JSONPath != "" && (c.Storage.FallbackToJSON == nil || *c.Storage.FallbackToJSON)
+}
+
+func (c *Config) reportsEnabled() bool { return c.Features.Reports == nil || *c.Features.Reports }
+
+// today: aktuelles Datum (JJJJ-MM-TT) in der eingestellten Zeitzone
+func (c *Config) today() string {
+	loc := c.loc
+	if loc == nil {
+		loc = time.Local
+	}
+	return time.Now().In(loc).Format("2006-01-02")
 }

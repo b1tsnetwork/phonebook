@@ -157,6 +157,73 @@ func exerciseStore(t *testing.T, st Store) {
 	if l, _ := st.ListPrivate(ctx, "mmuster"); len(l[0].Shares.Employees) != 0 || len(l[0].Shares.Amts) != 1 {
 		t.Fatalf("Freigabe nach Löschen der Person: %+v", l[0].Shares)
 	}
+	// Organisation, Vertretungen, Abwesenheiten, Meldungen
+	vid, err := st.CreateEmployee(ctx, &EmployeeRec{LastName: "Vertreter", Source: "manual", Active: true, CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dez, _ := st.CreateOrgUnit(ctx, OrgUnit{Name: "Dezernat I", Sort: 1})
+	amt, _ := st.CreateOrgUnit(ctx, OrgUnit{Parent: dez, Name: "Hauptamt", Short: "10", Leaders: []int64{id}, Deputies: []int64{vid}})
+	if n, err := st.SetOrgUnit(ctx, []int64{id, vid}, amt); err != nil || n != 2 {
+		t.Fatalf("SetOrgUnit: %d %v", n, err)
+	}
+	if err := st.SetDeputies(ctx, id, []int64{vid}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAbsences(ctx, id, []Absence{{From: "2026-11-02", To: "2026-11-06", Deputies: []int64{vid}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSetting(ctx, settingOrgLevels, `["Dezernat","Amt"]`); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := st.GetSetting(ctx, settingOrgLevels); v != `["Dezernat","Amt"]` {
+		t.Fatalf("Setting: %q", v)
+	}
+	got, _ = st.GetEmployee(ctx, id)
+	if got.OrgUnit != amt || len(got.Deputies) != 1 || len(got.Absences) != 1 || got.Absences[0].To != "2026-11-06" {
+		t.Fatalf("Org/Vertretung/Abwesenheit: %+v", got)
+	}
+	rid, err := st.CreateReport(ctx, Report{EmployeeID: vid, Target: "Vertreter", Field: "phone", Suggestion: "0815", Reporter: "anna", CreatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := st.CountReports(ctx, "open", "anna"); n != 1 {
+		t.Fatalf("CountReports = %d", n)
+	}
+	if err := st.UpdateReport(ctx, rid, "done", "admin", "erledigt"); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := st.ListReports(ctx, "done", 10); len(l) != 1 || l[0].ResolvedBy != "admin" || l[0].ResolvedAt == nil {
+		t.Fatalf("ListReports: %+v", l)
+	}
+	if err := st.UpdateReport(ctx, 99999, "done", "x", ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateReport unbekannt: %v", err)
+	}
+	// Vertreter löschen → überall entfernt, Meldung bleibt (ohne Verweis)
+	if err := st.DeleteEmployee(ctx, vid); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetEmployee(ctx, id)
+	if len(got.Deputies) != 0 || len(got.Absences) != 1 || len(got.Absences[0].Deputies) != 0 {
+		t.Fatalf("Verweise nach Löschen: %+v", got)
+	}
+	units, _ := st.ListOrgUnits(ctx)
+	for _, u := range units {
+		if u.ID == amt && (len(u.Deputies) != 0 || len(u.Leaders) != 1 || u.Parent != dez || u.Short != "10") {
+			t.Fatalf("Einheit nach Löschen: %+v", u)
+		}
+	}
+	if l, _ := st.ListReports(ctx, "", 0); len(l) != 1 || l[0].EmployeeID != 0 || l[0].Target != "Vertreter" {
+		t.Fatalf("Meldung nach Löschen: %+v", l)
+	}
+	// Einheit löschen → Personen wandern zur übergeordneten Einheit
+	if err := st.DeleteOrgUnit(ctx, amt); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = st.GetEmployee(ctx, id)
+	if got.OrgUnit != dez {
+		t.Fatalf("nach Löschen der Einheit: %d", got.OrgUnit)
+	}
 	// AD-Abgleich-Plan
 	plan := &SyncPlan{Now: now, Creates: []EmployeeRec{{Username: "jdoe", LastName: "Doe", ADGUID: "g-1", Source: "ad", Active: true, Tags: []int64{}}},
 		Updates: []SyncUpdate{{ID: id, Fields: contactFields{LastName: "Muster", FirstName: "Max", Phone: "999"}, GUID: "g-2", DN: "CN=x", Changed: true}}}
@@ -206,6 +273,9 @@ func exerciseStore(t *testing.T, st Store) {
 	if err := snap.validate(); err != nil {
 		t.Fatal(err)
 	}
+	if len(snap.OrgUnits) != 1 || len(snap.Reports) != 1 || snap.Settings[settingOrgLevels] == "" {
+		t.Fatalf("Export Organisation/Meldungen: %+v %+v %+v", snap.OrgUnits, snap.Reports, snap.Settings)
+	}
 	if len(snap.Categories) != 3 || snap.Private[0].Shares == nil || len(snap.Private[0].Shares.Amts) != 1 {
 		t.Fatalf("Export Kategorien/Freigaben: %+v %+v", snap.Categories, snap.Private[0].Shares)
 	}
@@ -244,7 +314,7 @@ func TestJSONStore(t *testing.T) {
 	}
 	// IDs laufen nach dem Laden weiter
 	id, err := st2.CreateEmployee(context.Background(), &EmployeeRec{LastName: "Neu", Source: "manual", Active: true})
-	if err != nil || id != 4 {
+	if err != nil || id != 5 {
 		t.Fatalf("neue ID %d %v", id, err)
 	}
 	// Kaputte Datei wird abgelehnt, nicht überschrieben

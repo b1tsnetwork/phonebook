@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand/v2"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -151,6 +152,9 @@ func seedDemo(a *App) error {
 			return err
 		}
 	}
+	if err := seedOrg(ctx, a, amter); err != nil {
+		return err
+	}
 	log.Printf("Demo-Daten angelegt (64 Einträge + 2 Einrichtungen)")
 	return nil
 }
@@ -181,4 +185,107 @@ func asciiLower(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// seedOrg: Beispiel-Organigramm (Dezernat › Amt › Sachgebiet) mit Leitungs-Schlagworten,
+// Zuordnung nach Amt-Text, Vertretungen und einer Abwesenheit.
+func seedOrg(ctx context.Context, a *App, amter []string) error {
+	st := a.st()
+	tagID := func(name string) int64 {
+		id, err := st.CreateTag(ctx, name, "sonstiges", "demo")
+		if err != nil {
+			return 0
+		}
+		return id
+	}
+	levels := []OrgLevel{
+		{Name: "Dezernat", LeaderTag: tagID("Dezernatsleitung")},
+		{Name: "Amt", LeaderTag: tagID("Amtsleitung"), DeputyTag: tagID("Stv. Amtsleitung")},
+		{Name: "Sachgebiet", LeaderTag: tagID("Sachgebietsleitung")},
+		{Name: "Team"},
+	}
+	b, _ := json.Marshal(levels)
+	if err := st.SetSetting(ctx, settingOrgLevels, string(b)); err != nil {
+		return err
+	}
+	dez := map[string]int64{}
+	for i, d := range []string{"Verwaltung", "Finanzen & Soziales", "Bauen"} {
+		id, err := st.CreateOrgUnit(ctx, OrgUnit{Name: d, Short: []string{"I", "II", "III"}[i], Sort: i + 1})
+		if err != nil {
+			return err
+		}
+		dez[[]string{"I", "II", "III"}[i]] = id
+	}
+	parentOf := map[string]string{"1": "I", "2": "II", "3": "I", "4": "II", "5": "II", "6": "III"}
+	recs, err := st.ListEmployees(ctx, true)
+	if err != nil {
+		return err
+	}
+	leadSet := func(e EmployeeRec, tag string) {
+		var tin []TagInput
+		for _, t := range e.Tags {
+			if tg, err := st.ListTags(ctx); err == nil {
+				for _, x := range tg {
+					if x.ID == t {
+						tin = append(tin, TagInput{Name: x.Name})
+					}
+				}
+			}
+		}
+		tin = append(tin, TagInput{Name: tag})
+		_, _ = st.SetEmployeeTags(ctx, e.ID, tin, "demo", true)
+	}
+	for i, amt := range amter {
+		num, name, _ := strings.Cut(amt, " – ")
+		uid, err := st.CreateOrgUnit(ctx, OrgUnit{Parent: dez[parentOf[num[:1]]], Name: name, Short: num, Sort: i})
+		if err != nil {
+			return err
+		}
+		var members []EmployeeRec
+		for _, e := range recs {
+			if e.Amt == amt {
+				members = append(members, e)
+			}
+		}
+		ids := make([]int64, len(members))
+		for j, e := range members {
+			ids[j] = e.ID
+		}
+		if _, err := st.SetOrgUnit(ctx, ids, uid); err != nil {
+			return err
+		}
+		if len(members) > 2 {
+			leadSet(members[1], "Amtsleitung")
+			leadSet(members[2], "Stv. Amtsleitung")
+			_ = st.SetDeputies(ctx, members[1].ID, []int64{members[2].ID})
+		}
+		if num == "12" && len(members) > 6 { // Sachgebiete der IT
+			for k, sg := range []string{"Infrastruktur", "Anwendungen & Support"} {
+				sid, err := st.CreateOrgUnit(ctx, OrgUnit{Parent: uid, Name: sg, Short: fmt.Sprintf("12.%d", k+1), Sort: k})
+				if err != nil {
+					return err
+				}
+				part := members[3+k*((len(members)-3)/2) : 3+(k+1)*((len(members)-3)/2)]
+				pid := make([]int64, len(part))
+				for j, e := range part {
+					pid[j] = e.ID
+				}
+				_, _ = st.SetOrgUnit(ctx, pid, sid)
+				if len(part) > 0 {
+					leadSet(part[0], "Sachgebietsleitung")
+				}
+			}
+		}
+	}
+	// Max Muster: Vertretung und eine aktuelle Abwesenheit
+	if mid, _ := st.EmployeeIDByUsername(ctx, "mmuster"); mid != 0 && len(recs) > 5 {
+		_ = st.SetDeputies(ctx, mid, []int64{recs[3].ID, recs[4].ID})
+		today := a.cfg.today()
+		t, _ := time.Parse("2006-01-02", today)
+		_ = st.SetAbsences(ctx, mid, []Absence{
+			{From: today, To: t.AddDate(0, 0, 4).Format("2006-01-02"), Deputies: []int64{recs[5].ID}},
+			{From: t.AddDate(0, 0, 21).Format("2006-01-02"), To: t.AddDate(0, 0, 25).Format("2006-01-02")},
+		})
+	}
+	return nil
 }

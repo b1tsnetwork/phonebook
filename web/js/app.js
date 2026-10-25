@@ -20,6 +20,14 @@ const S = {
   tagById: new Map(),
   cats: [],
   catByKey: new Map(),
+  org: { levels: [], units: [] },
+  unitById: new Map(),
+  unitKids: new Map(),
+  view: 'list',
+  orgCur: 0,
+  orgAll: false,
+  today: '',
+  openReports: 0,
   selPeople: new Set(), // keys
   selTags: new Set(),   // ids
   sort: { key: 'name', dir: 1 },
@@ -143,6 +151,16 @@ async function reload(keepSel = true) {
   for (const e of d.employees) people.push(mkPerson('emp', e));
   for (const p of d.private) people.push(mkPerson('priv', p));
   for (const p of d.shared || []) people.push(mkPerson('shared', p));
+  S.org = d.org || { levels: [], units: [] };
+  S.unitById = new Map(S.org.units.map((u) => [u.id, u]));
+  S.unitKids = new Map();
+  for (const u of S.org.units) {
+    const k = S.unitById.has(u.parent) ? u.parent : 0;
+    if (!S.unitKids.has(k)) S.unitKids.set(k, []);
+    S.unitKids.get(k).push(u);
+  }
+  S.today = d.today || new Date().toISOString().slice(0, 10);
+  S.openReports = d.openReports || 0;
   S.cats = d.categories || [];
   S.catByKey = new Map(S.cats.map((c) => [c.key, c]));
   if (S.catFilter && !S.catByKey.has(S.catFilter)) S.catFilter = '';
@@ -155,6 +173,9 @@ async function reload(keepSel = true) {
   buildRows();
   buildTagRows();
   renderHeader();
+  computeRoles();
+  $('#viewbar').hidden = !(S.org.units.length || S.me.isAdmin);
+  if ($('#viewbar').hidden && S.view === 'org') setView('list');
   update();
 }
 
@@ -194,6 +215,8 @@ function bindUI() {
   $('#sort-sel').addEventListener('change', () => { S.sort = { key: $('#sort-sel').value, dir: S.sort.dir }; sortRows(); update(); });
   $('#sort-dir').addEventListener('click', () => { S.sort = { key: S.sort.key, dir: -S.sort.dir }; sortRows(); update(); });
   $$('#mtabs button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
+  $$('#viewbar button').forEach((b) => b.addEventListener('click', () => { setView(b.dataset.view); update(); }));
+  try { if (localStorage.getItem('tb.view') === 'org') setView('org'); } catch { /* egal */ }
   setTab('people');
   $('#user-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(); });
   $('#help-btn').addEventListener('click', () => helpDialog());
@@ -240,6 +263,8 @@ function buildRows() {
     const badges = [];
     badges.push(...privBadges(p, true));
     if (p.self) badges.push(h('span', { class: 'badge self' }, 'ich'));
+    const away = absNow(p);
+    if (away) badges.push(h('span', { class: 'badge away', title: absenceText(p, away) }, '🏖 bis ' + fmtDay(away.to)));
     if (p.kind === 'emp' && (!p.active || p.hidden)) badges.push(h('span', { class: 'badge off' }, !p.active ? 'inaktiv' : 'ausgeblendet'));
     const row = h('div', { class: 'row', role: 'option', tabindex: '-1', dataset: { key: p.key } },
       h('div', { class: 'c-name' }, img, h('span', { class: 'nm' }, h('b', null, p.lastName), p.firstName ? ', ' + p.firstName : ''), ...badges),
@@ -327,6 +352,7 @@ function update() {
   renderChips();
   renderCard();
   renderTags();
+  if (S.view === 'org') renderOrg();
 }
 
 // Mobil: Personen und Schlagworte als Reiter
@@ -412,9 +438,14 @@ function renderCard() {
   }
   const line = (icon, label, val, href) => val ? h('div', { class: 'kv' }, h('span', { class: 'k' }, icon + ' ' + label), href ? h('a', { href }, val) : h('span', null, val)) : null;
   const btns = [];
+  const isEmp = p.kind === 'emp';
+  const own = isEmp && (p.self || S.me.isAdmin);
   if (canEditTags(p)) btns.push(h('button', { type: 'button', class: 'primary', onclick: () => editTags(p) }, p.self ? '🏷 Meine Schlagworte' : '🏷 Schlagworte'));
   if (p.kind === 'emp' && (p.self || S.me.isAdmin)) btns.push(h('button', { type: 'button', onclick: () => editAvatar(p) }, '🙂 Avatar'));
   if (canEditPerson(p)) btns.push(h('button', { type: 'button', onclick: () => editPerson(p) }, p.kind === 'priv' ? '✏️ Bearbeiten' : '✏️ Stammdaten'));
+  if (own) btns.push(h('button', { type: 'button', onclick: () => editDeputies(p) }, '👥 Vertretung'));
+  if (own && S.site.absences !== 'off') btns.push(h('button', { type: 'button', onclick: () => editAbsences(p) }, '🏖 Abwesenheit'));
+  if (isEmp && !S.me.guest && S.site.reports !== false) btns.push(h('button', { type: 'button', class: 'subtle', title: 'Falsche oder veraltete Angaben melden', onclick: () => reportDialog(p) }, '🚩 Fehler melden'));
   const head = h('div', { class: 'card-head' }, av ? cv : h('div', { class: 'card-av priv' }, p.kind === 'shared' || p.sharedOut ? '🔗' : '🔒'),
     h('div', null,
       h('h3', null, p.lastName, p.firstName ? ', ' + p.firstName : ''),
@@ -422,7 +453,8 @@ function renderCard() {
       h('div', { class: 'badges' },
         ...privBadges(p, false),
         p.source === 'ad' ? h('span', { class: 'badge ad', title: 'Stammdaten kommen aus dem Active Directory' }, 'AD') : null,
-        p.self ? h('span', { class: 'badge self' }, 'das bist du') : null)));
+        p.self ? h('span', { class: 'badge self' }, 'das bist du') : null,
+        ...(isEmp ? personRoles(p).map((r) => h('span', { class: 'badge role', title: r.title }, r.label)) : []))));
   card.replaceChildren(h('div', { class: 'card' }, head,
     h('div', { class: 'kvs' },
       line('☎', 'Telefon', p.phone, telHref(p.phone)),
@@ -430,7 +462,8 @@ function renderCard() {
       line('🚪', 'Raum', p.room),
       line('✉', 'E-Mail', p.email, p.email ? 'mailto:' + p.email : null),
       p.note ? h('div', { class: 'kv note' }, h('span', { class: 'k' }, '📝 Notiz'), h('span', null, p.note)) : null,
-      p.sharedOut ? h('div', { class: 'kv note' }, h('span', { class: 'k' }, '🔗 Geteilt mit'), h('span', null, shareSummary(p.shares))) : null),
+      p.sharedOut ? h('div', { class: 'kv note' }, h('span', { class: 'k' }, '🔗 Geteilt mit'), h('span', null, shareSummary(p.shares))) : null,
+      ...(isEmp ? cardOrgLines(p) : [])),
     btns.length ? h('div', { class: 'card-btns' }, btns) : null));
 }
 
@@ -527,12 +560,17 @@ function toggleMenu() {
     item('🙂 Mein Avatar', () => editAvatar(me), { disabled: !me, title: me ? null : 'Für dein Konto gibt es keinen Telefonbucheintrag' }),
     item('🏷 Meine Schlagworte', () => editTags(me), { disabled: !me, title: me ? null : 'Für dein Konto gibt es keinen Telefonbucheintrag' }),
     item('➕ Privaten Kontakt hinzufügen', () => editPerson(null, 'priv')),
+    item('👥 Meine Vertretung', () => editDeputies(me), { disabled: !me, title: me ? null : 'Für dein Konto gibt es keinen Telefonbucheintrag' }),
   ];
+  if (S.site.absences !== 'off') items.push(item('🏖 Meine Abwesenheit', () => editAbsences(me), { disabled: !me }));
+  if (S.site.reports !== false) items.push(item('🚩 Meine Meldungen', myReportsDialog));
   if (S.me.isAdmin) {
     items.push(h('div', { class: 'menu-sep' }, 'Verwaltung'),
       item('👤 Neuen Eintrag anlegen', () => editPerson(null, 'emp')),
       item('🏷 Schlagworte verwalten', tagManager),
       item('🗂 Kategorien verwalten', categoryManager),
+      item('🏢 Organisation verwalten', orgManager),
+      ...(S.site.reports !== false ? [item(`🚩 Meldungen${S.openReports ? ' (' + S.openReports + ' offen)' : ''}`, reportsDialog)] : []),
       item('🔄 AD-Abgleich', syncDialog),
       item('💾 Datenhaltung', storageDialog),
       item('📜 Protokoll', auditDialog),
@@ -572,6 +610,10 @@ function helpDialog() {
       ['Menü → ', h('b', null, 'Mein Avatar'), ': Pixel-Kopf gestalten, drehen (ziehen), im Bereich „Malen“ pixelgenau bemalen. ', kbd('Strg'), '+', kbd('Z'), ' macht rückgängig.'],
       ['Menü → ', h('b', null, 'Privaten Kontakt hinzufügen'), ': erscheint mit 🔒 in deiner Liste und ist nur für dich sichtbar.'],
       ['Private Kontakte lassen sich unter „Freigeben“ für einzelne Personen oder ein ganzes Amt teilen (🔗 Privat, geteilt). Bearbeiten kann nur, wer den Kontakt angelegt hat.']),
+    sec('🏢 Organisation, Vertretung, Abwesenheit',
+      ['Oben links zwischen ', h('b', null, '☰ Liste'), ' und ', h('b', null, '🏢 Organisation'), ' wechseln: Im Organigramm klickst du dich von Ebene zu Ebene, oben stehen jeweils Leitung und Stellvertretung.'],
+      'Auf der Visitenkarte steht „Vertretung: …“ – ein Klick springt direkt zu dieser Person. 🏖 zeigt eine Abwesenheit samt Zeitraum und Vertretung.',
+      ['Eigene Vertretung und Abwesenheit trägst du im Menü ein. Stimmt etwas nicht, hilft ', h('b', null, '🚩 Fehler melden'), ' auf der Visitenkarte.']),
     sec('💻 Windows-Symbol',
       ['Das Telefonbuch als Symbol im Infobereich (unten rechts): Klick öffnet es, Rechtsklick → „Suchen …“. ', h('a', { href: '/client/telefonbuch-windows.zip', download: '' }, 'Herunterladen'), ', entpacken, ', h('b', null, 'install.cmd'), ' doppelklicken – ohne Administratorrechte.']),
     sec('⌨️ Tastatur',
@@ -642,12 +684,16 @@ function editTags(p) {
   let newCat = S.catByKey.has('taetigkeit') ? 'taetigkeit' : (S.cats[0]?.key || '');
   const renderCat = () => catSel.replaceChildren(...S.cats.map((c) => h('button', { type: 'button', class: c.key === newCat ? 'active' : '', onclick: () => { newCat = c.key; renderCat(); renderSugg(); } }, dot(c.key), ' ', c.name)));
   renderCat();
+  // Leitungs-/Vertretungs-Schlagworte des Organigramms: nur Admins vergeben sie
+  const prot = new Set(S.org.levels.flatMap((l) => [l.leaderTag, l.deputyTag]).filter(Boolean).map((id) => norm((S.tagById.get(id) || {}).name || '')));
+  const locked = (name) => !S.me.isAdmin && prot.has(norm(name));
   const has = (name) => cur.some((t) => norm(t.name) === norm(name));
   const known = (name) => S.tags.find((t) => norm(t.name) === norm(name));
   const add = (name, cat) => {
     name = name.trim().replace(/\s+/g, ' ');
     if (!name || has(name)) return;
     if (cur.length >= S.me.features.maxTags) { toast(`Höchstens ${S.me.features.maxTags} Schlagworte`, 'err'); return; }
+    if (locked(name)) { toast('Dieses Schlagwort (Leitung/Stellvertretung) vergeben nur Administratoren', 'err'); return; }
     const k = known(name);
     if (!k && !S.me.features.userCreatesTags && !S.me.isAdmin) { toast('Neue Schlagworte können nur Administratoren anlegen', 'err'); return; }
     cur.push(k ? { name: k.name, category: k.category } : { name, category: cat || newCat });
@@ -655,12 +701,12 @@ function editTags(p) {
     render();
   };
   const render = () => {
-    chipsBox.replaceChildren(...(cur.length ? cur.map((t, i) => h('span', { class: 'chip', style: { borderColor: catColor(t.category) } }, t.name, h('button', { type: 'button', class: 'x', title: 'Entfernen', 'aria-label': 'Entfernen', onclick: () => { cur.splice(i, 1); render(); } }, '✕'))) : [h('span', { class: 'muted' }, 'Noch keine Schlagworte.')]));
+    chipsBox.replaceChildren(...(cur.length ? cur.map((t, i) => h('span', { class: 'chip', style: { borderColor: catColor(t.category) }, title: locked(t.name) ? 'Vergibt die Administration (Organigramm)' : null }, t.name, locked(t.name) ? ' 🔒' : h('button', { type: 'button', class: 'x', title: 'Entfernen', 'aria-label': 'Entfernen', onclick: () => { cur.splice(i, 1); render(); } }, '✕'))) : [h('span', { class: 'muted' }, 'Noch keine Schlagworte.')]));
     renderSugg();
   };
   const renderSugg = () => {
     const q = norm(input.value.trim());
-    const list = S.tags.filter((t) => !has(t.name) && (!q || norm(t.name).includes(q) || normAlt(t.name).includes(q))).sort((a, b) => b.count - a.count).slice(0, q ? 12 : 18);
+    const list = S.tags.filter((t) => !has(t.name) && !locked(t.name) && (!q || norm(t.name).includes(q) || normAlt(t.name).includes(q))).sort((a, b) => b.count - a.count).slice(0, q ? 12 : 18);
     const items = list.map((t) => h('button', { type: 'button', class: 'sugg-item', onclick: () => add(t.name) }, dot(t.category), t.name, h('small', null, String(t.count))));
     const exact = q && S.tags.some((t) => norm(t.name) === q);
     if (q && !exact && !has(input.value) && (S.me.features.userCreatesTags || S.me.isAdmin)) items.unshift(h('button', { type: 'button', class: 'sugg-item new', onclick: () => add(input.value) }, '＋ Neu: „', input.value.trim(), '“ als ', catName(newCat)));
@@ -670,7 +716,7 @@ function editTags(p) {
   input.addEventListener('input', renderSugg);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ',' || e.key === ';') { e.preventDefault(); if (input.value.trim()) add(input.value); }
-    if (e.key === 'Backspace' && !input.value && cur.length) { cur.pop(); render(); }
+    if (e.key === 'Backspace' && !input.value && cur.length && !locked(cur[cur.length - 1].name)) { cur.pop(); render(); }
   });
   render();
   openDialog({
@@ -702,7 +748,7 @@ function editPerson(p, kindNew) {
   const dl = h('datalist', { id: 'amt-list' }, [...new Set(S.people.map((x) => x.amt).filter(Boolean))].sort(collator.compare).map((a) => h('option', { value: a })));
   body.append(dl);
   inputs.amt.setAttribute('list', 'amt-list');
-  let note, user, hidden;
+  let note, user, hidden, orgSel;
   let shareEmp, shareAmts;
   if (kind === 'priv') {
     note = h('textarea', { maxlength: 500, rows: 3 }, p ? p.note || '' : '');
@@ -729,6 +775,8 @@ function editPerson(p, kindNew) {
     body.prepend(hint);
     updHint();
   } else {
+    orgSel = unitSelect(p ? p.orgUnit || 0 : (S.view === 'org' && S.orgCur > 0 ? S.orgCur : 0));
+    body.append(h('div', { class: 'full' }, field('Organisation', orgSel, S.org.units.length ? 'Position im Organigramm. Die Anzeige „Amt“ bleibt davon unabhängig.' : 'Noch keine Einheiten angelegt (Verwaltung → Organisation).')));
     user = h('input', { type: 'text', value: p ? p.username || '' : '', maxlength: 64, autocomplete: 'off', placeholder: 'z. B. mmuster' });
     hidden = h('input', { type: 'checkbox', checked: p && p.hidden ? true : null });
     body.append(field('Benutzername (Windows-Anmeldung)', user, 'Verknüpft den Eintrag mit dem Konto – dann kann die Person ihre Schlagworte und ihren Avatar selbst pflegen.'),
@@ -748,7 +796,7 @@ function editPerson(p, kindNew) {
     const data = {};
     for (const k of Object.keys(inputs)) data[k] = inputs[k].value;
     if (kind === 'priv') { data.note = note.value; data.shares = { employees: [...shareEmp], amts: shareAmts }; }
-    else { data.username = user.value; data.hidden = hidden.checked; }
+    else { data.username = user.value; data.hidden = hidden.checked; data.orgUnit = +orgSel.value; }
     try {
       if (kind === 'priv') await api(isNew ? 'POST' : 'PUT', isNew ? '/api/private' : `/api/private/${p.id}`, data);
       else await api(isNew ? 'POST' : 'PUT', isNew ? '/api/employees' : `/api/employees/${p.id}`, data);
@@ -885,6 +933,482 @@ function deleteCategory(c) {
   });
 }
 
+// ---------- Ansicht: Liste / Organigramm ----------
+
+function setView(v) {
+  S.view = v === 'org' ? 'org' : 'list';
+  $('#main').classList.toggle('view-org', S.view === 'org');
+  $$('#viewbar button').forEach((b) => b.classList.toggle('active', b.dataset.view === S.view));
+  $('#orgview').hidden = S.view !== 'org';
+  try { localStorage.setItem('tb.view', S.view); } catch { /* egal */ }
+}
+
+// ---------- Hilfen: Datum, Personen, Einheiten ----------
+
+function fmtDay(d) {
+  if (!d) return '';
+  const [y, m, t] = d.split('-');
+  return `${t}.${m}.${y === S.today.slice(0, 4) ? '' : y}`;
+}
+const absNow = (p) => (p.absences || []).find((a) => a.from <= S.today && a.to >= S.today) || null;
+const empByID = (id) => S.byKey.get('e' + id) || null;
+const nameOf = (x) => (x ? [x.firstName, x.lastName].filter(Boolean).join(' ') : '');
+function absDeputies(p, a) { return (a && a.deputies && a.deputies.length ? a.deputies : p.deputies || []).map(empByID).filter(Boolean); }
+function absenceText(p, a) {
+  const dep = absDeputies(p, a).map(nameOf).join(', ');
+  return `Abwesend ${fmtDay(a.from)}–${fmtDay(a.to)}` + (dep ? ` · Vertretung: ${dep}` : '');
+}
+
+// Sprung zu einer Person (Visitenkarte rechts)
+function goPerson(key) {
+  const p = S.byKey.get(key);
+  if (!p) return;
+  if (p.kind === 'emp' && (!p.active || p.hidden) && !S.showHidden) { toast('Dieser Eintrag ist ausgeblendet', 'err'); return; }
+  const row = S.rows.get(key);
+  if (row && row.hidden) resetAll(true);
+  S.selPeople = new Set([key]);
+  update();
+  const r = S.rows.get(key);
+  if (r && S.view === 'list') r.scrollIntoView({ block: 'nearest' });
+  if (isMobile() && S.tab !== 'tags') setTab('tags');
+}
+function personLink(p, extra) {
+  if (!p) return null;
+  const a = absNow(p);
+  return h('button', { type: 'button', class: 'plink', title: a ? absenceText(p, a) : 'Zur Visitenkarte', onclick: () => goPerson(p.key) },
+    h('img', { src: avatarURL(p, 20), alt: '', width: 20, height: 20 }), nameOf(p) || p.display, a ? ' 🏖' : '', extra || '');
+}
+const links = (list) => list.flatMap((p, i) => (i ? [', ', personLink(p)] : [personLink(p)]));
+
+function unitPath(u) {
+  const out = [];
+  for (let x = u, n = 0; x && n < 16; x = S.unitById.get(x.parent), n++) out.unshift(x);
+  return out;
+}
+const unitDepth = (u) => unitPath(u).length;
+const unitLevel = (u) => S.org.levels[unitDepth(u) - 1] || { name: 'Ebene ' + unitDepth(u) };
+const unitLabel = (u) => (u.short ? u.short + ' – ' : '') + u.name;
+const visibleEmp = (p) => p.kind === 'emp' && (S.showHidden || (p.active && !p.hidden));
+
+function unitMembers(id, subtree) {
+  const ids = new Set([id]);
+  if (subtree) {
+    const walk = (k) => { for (const c of S.unitKids.get(k) || []) { ids.add(c.id); walk(c.id); } };
+    walk(id);
+  }
+  return S.people.filter((p) => visibleEmp(p) && (id === -1 ? !S.unitById.has(p.orgUnit) : ids.has(p.orgUnit)));
+}
+
+// Leitung/Stellvertretung: Zuordnung zur Einheit + Schlagwort der Ebene, dazu fest eingetragene Personen
+function unitLeads(u) {
+  const lv = unitLevel(u);
+  const members = unitMembers(u.id, false);
+  const pick = (tag, manual) => {
+    const out = new Map();
+    for (const id of manual || []) { const p = empByID(id); if (p && visibleEmp(p)) out.set(p.key, p); }
+    if (tag) for (const p of members) if (p.tagSet.has(tag)) out.set(p.key, p);
+    return [...out.values()];
+  };
+  return { leaders: pick(lv.leaderTag, u.leaders), deputies: pick(lv.deputyTag, u.deputies) };
+}
+
+// Rollen (Leitung/Stellvertretung) je Person – einmal pro Neuladen berechnet
+function computeRoles() {
+  S.roleMap = new Map();
+  const add = (p, r) => { if (!S.roleMap.has(p.key)) S.roleMap.set(p.key, []); S.roleMap.get(p.key).push(r); };
+  for (const u of S.org.units) {
+    const { leaders, deputies } = unitLeads(u);
+    const lv = unitLevel(u);
+    for (const p of leaders) add(p, { unit: u.id, lead: true, label: '★ Leitung ' + (u.short || u.name), title: `Leitung (${lv.name}): ${unitLabel(u)}` });
+    for (const p of deputies) if (!leaders.includes(p)) add(p, { unit: u.id, lead: false, label: '☆ Stv. Leitung ' + (u.short || u.name), title: `Stellvertretende Leitung (${lv.name}): ${unitLabel(u)}` });
+  }
+}
+const personRoles = (p) => (S.roleMap && S.roleMap.get(p.key)) || [];
+
+function cardOrgLines(p) {
+  const rows = [];
+  const kv = (k, ...v) => h('div', { class: 'kv' }, h('span', { class: 'k' }, k), h('span', { class: 'kv-v' }, ...v));
+  const u = S.unitById.get(p.orgUnit);
+  if (u) {
+    const path = unitPath(u);
+    rows.push(kv('🏢 Einheit', ...path.flatMap((x, i) => [i ? ' › ' : '', h('button', { type: 'button', class: 'linkish', title: unitLabel(x), onclick: () => { setView('org'); S.orgCur = x.id; update(); if (isMobile()) setTab('people'); } }, i === path.length - 1 ? unitLabel(x) : x.short || x.name)])));
+  }
+  const a = absNow(p);
+  if (a) rows.push(h('div', { class: 'kv away' }, h('span', { class: 'k' }, '🏖 Abwesend'), h('span', { class: 'kv-v' }, `${fmtDay(a.from)} – ${fmtDay(a.to)}`, ...(absDeputies(p, a).length ? [h('br'), 'Vertretung: ', ...links(absDeputies(p, a))] : []))));
+  const deps = (p.deputies || []).map(empByID).filter(Boolean);
+  if (deps.length && !(a && a.deputies && a.deputies.length)) rows.push(kv('👥 Vertretung', ...links(deps)));
+  else if (deps.length) rows.push(kv('👥 Vertretung', ...links(deps), h('small', { class: 'muted' }, ' (sonst)')));
+  const next = (p.absences || []).filter((x) => x.from > S.today).slice(0, 2);
+  if (next.length) rows.push(kv('📅 Geplant', next.map((x) => `${fmtDay(x.from)}–${fmtDay(x.to)}`).join(', ')));
+  const reverse = S.people.filter((x) => x.kind === 'emp' && (x.deputies || []).includes(p.id) && visibleEmp(x));
+  if (reverse.length) rows.push(kv('↩ Vertritt', ...links(reverse.slice(0, 8)), reverse.length > 8 ? ` +${reverse.length - 8}` : ''));
+  return rows;
+}
+
+// Auswahlfeld: Einheiten eingerückt nach Ebene
+function unitSelect(cur, exclude) {
+  const sel = h('select', null, h('option', { value: 0 }, '— keine —'));
+  const walk = (k, depth) => {
+    for (const u of S.unitKids.get(k) || []) {
+      if (exclude && u.id === exclude) continue;
+      sel.append(h('option', { value: u.id, selected: u.id === cur || null }, '  '.repeat(depth) + unitLabel(u) + ` (${(S.org.levels[depth] || {}).name || ''})`));
+      walk(u.id, depth + 1);
+    }
+  };
+  walk(0, 0);
+  return sel;
+}
+
+// ---------- Organigramm (linke Seite) ----------
+
+function orgGo(id) { S.orgCur = id; S.selPeople.clear(); update(); $('#orgview').scrollTop = 0; }
+
+function renderOrg() {
+  const box = $('#orgview');
+  const qMain = tokens($('#q-main').value), qRoom = tokens($('#q-room').value), qAmt = tokens($('#q-amt').value);
+  const filtered = qMain.length || qRoom.length || qAmt.length || S.selTags.size;
+  if (S.orgCur > 0 && !S.unitById.has(S.orgCur)) S.orgCur = 0;
+  const cur = S.orgCur > 0 ? S.unitById.get(S.orgCur) : null;
+  const crumbs = h('nav', { class: 'crumbs', 'aria-label': 'Pfad' }, h('button', { type: 'button', class: 'crumb', onclick: () => orgGo(0) }, '🏢 Organisation'),
+    ...(cur ? unitPath(cur) : S.orgCur === -1 ? [{ id: -1, name: 'Ohne Zuordnung' }] : []).flatMap((u) => [h('span', { class: 'sep' }, '›'), h('button', { type: 'button', class: 'crumb', onclick: () => orgGo(u.id) }, u.id === -1 ? u.name : unitLabel(u))]));
+  const parts = [crumbs];
+  const personRow = (p) => {
+    const a = absNow(p);
+    const row = h('div', { class: 'org-person' + (S.selPeople.has(p.key) ? ' sel' : ''), role: 'option', tabindex: '-1', onclick: (e) => clickPerson(p.key, e) },
+      h('img', { src: avatarURL(p, 32), alt: '', width: 32, height: 32 }),
+      h('span', { class: 'nm' }, h('span', null, h('b', null, p.lastName), p.firstName ? ', ' + p.firstName : ''), ...personRoles(p).filter((r) => !cur || r.unit === cur.id).map((r) => h('span', { class: 'badge role', title: r.title }, r.lead ? '★ Leitung' : '☆ Stv.')), a ? h('span', { class: 'badge away', title: absenceText(p, a) }, '🏖 bis ' + fmtDay(a.to)) : null),
+      p.phone ? h('a', { href: telHref(p.phone), onclick: (e) => e.stopPropagation() }, p.phone) : h('span', { class: 'muted' }, '–'),
+      h('span', { class: 'muted org-amt' }, p.amt || ''));
+    return row;
+  };
+  if (cur) {
+    const lv = unitLevel(cur);
+    const { leaders, deputies } = unitLeads(cur);
+    parts.push(h('div', { class: 'org-head' },
+      h('div', { class: 'org-level' }, lv.name),
+      h('h3', null, unitLabel(cur)),
+      h('div', { class: 'org-leads' },
+        h('div', null, h('span', { class: 'k' }, '★ Leitung'), leaders.length ? links(leaders) : h('span', { class: 'muted' }, lv.leaderTag ? '–' : '– (kein Leitungs-Schlagwort für diese Ebene)')),
+        h('div', null, h('span', { class: 'k' }, '☆ Stellvertretung'), deputies.length ? links(deputies) : h('span', { class: 'muted' }, '–')))));
+  }
+  // Untereinheiten
+  const kids = S.orgCur === -1 ? [] : S.unitKids.get(cur ? cur.id : 0) || [];
+  if (kids.length || (!cur && S.orgCur !== -1)) {
+    const cards = kids.map((u) => {
+      const n = unitMembers(u.id, true).filter((p) => !filtered || matchPerson(p, qMain, qRoom, qAmt)).length;
+      const { leaders } = unitLeads(u);
+      return h('button', { type: 'button', class: 'org-card', onclick: () => orgGo(u.id) },
+        h('span', { class: 'org-level' }, unitLevel(u).name),
+        h('b', null, unitLabel(u)),
+        h('span', { class: 'muted' }, `${n} ${n === 1 ? 'Person' : 'Personen'}${(S.unitKids.get(u.id) || []).length ? ` · ${(S.unitKids.get(u.id) || []).length} Untereinheit(en)` : ''}`),
+        leaders.length ? h('span', { class: 'org-lead' }, '★ ', leaders.map(nameOf).join(', ')) : null);
+    });
+    if (!cur) {
+      const none = unitMembers(-1, false).length;
+      if (none) cards.push(h('button', { type: 'button', class: 'org-card none', onclick: () => orgGo(-1) }, h('span', { class: 'org-level' }, '—'), h('b', null, 'Ohne Zuordnung'), h('span', { class: 'muted' }, `${none} Personen`)));
+    }
+    if (!kids.length && !cur) parts.push(h('p', { class: 'muted pad' }, S.me.isAdmin ? 'Noch keine Organisationseinheiten. Anlegen unter Verwaltung → 🏢 Organisation verwalten.' : 'Noch keine Organisationseinheiten angelegt.'));
+    parts.push(h('div', { class: 'org-grid' }, cards));
+  }
+  // Personen
+  if (cur || S.orgCur === -1) {
+    const hasKids = (S.unitKids.get(S.orgCur) || []).length > 0;
+    const all = unitMembers(S.orgCur, S.orgAll && hasKids);
+    const list = all.filter((p) => matchPerson(p, qMain, qRoom, qAmt)).sort((a, b) => {
+      const ra = personRoles(a).length ? 0 : 1, rb = personRoles(b).length ? 0 : 1;
+      return ra - rb || collator.compare(a.lastName + ' ' + a.firstName, b.lastName + ' ' + b.firstName);
+    });
+    parts.push(h('div', { class: 'org-sub' },
+      h('b', null, `👥 ${list.length}${filtered ? ' von ' + all.length : ''} ${all.length === 1 ? 'Person' : 'Personen'}`),
+      hasKids ? h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: S.orgAll || null, onchange: (e) => { S.orgAll = e.target.checked; update(); } }), ' inkl. Untereinheiten') : null,
+      S.me.isAdmin && cur ? h('button', { type: 'button', class: 'linkish', onclick: () => membersDialog(cur) }, '✏️ Zuordnung') : null),
+      list.length ? h('div', { class: 'org-people', role: 'listbox' }, list.map(personRow)) : h('p', { class: 'muted pad' }, filtered ? 'Niemand passt zum Filter.' : 'Hier ist (direkt) niemand zugeordnet.'));
+  }
+  box.replaceChildren(...parts);
+}
+
+// ---------- Vertretung & Abwesenheit ----------
+
+function pickList(exceptId) {
+  return S.people.filter((x) => x.kind === 'emp' && x.active && !x.hidden && x.id !== exceptId).map(pickPerson);
+}
+
+function editDeputies(p) {
+  if (!p) return;
+  const sel = new Set(p.deputies || []);
+  const pp = personPicker({ people: pickList(p.id), selected: sel, placeholder: 'Vertretung suchen (Name, Amt) …' });
+  openDialog({
+    title: p.self ? 'Meine Vertretung' : `Vertretung: ${nameOf(p)}`, wide: true,
+    body: h('div', { class: 'admin' }, h('p', { class: 'hint' }, 'Wer vertritt dich? Die Personen erscheinen auf deiner Visitenkarte („Vertretung: …“) – in der Reihenfolge der Auswahl. Höchstens 10.'), pp.el),
+    buttons: ['spacer', { label: 'Abbrechen' }, { label: 'Speichern', cls: 'primary', onClick: async () => {
+      try { await api('PUT', `/api/employees/${p.id}/deputies`, { deputies: [...sel] }); toast('Vertretung gespeichert', 'ok'); await reload(); } catch (e) { toast(e.message, 'err'); return false; }
+    } }],
+  });
+  setTimeout(() => pp.focus(), 30);
+}
+
+function editAbsences(p) {
+  if (!p) return;
+  const rows = (p.absences || []).map((a) => ({ from: a.from, to: a.to, deputies: new Set(a.deputies || []) }));
+  const list = h('div', { class: 'abs-list' });
+  const render = () => {
+    list.replaceChildren(...(rows.length ? rows.map((r, i) => {
+      const from = h('input', { type: 'date', value: r.from, min: S.today, required: true, onchange: (e) => { r.from = e.target.value; if (!r.to || r.to < r.from) { r.to = r.from; render(); } } });
+      const to = h('input', { type: 'date', value: r.to, min: S.today, required: true, onchange: (e) => { r.to = e.target.value; } });
+      const pp = personPicker({ people: pickList(p.id), selected: r.deputies, placeholder: 'Abweichende Vertretung …' });
+      return h('div', { class: 'abs-row' },
+        h('div', { class: 'abs-dates' }, field('Von', from), field('Bis (einschließlich)', to),
+          h('button', { type: 'button', class: 'icon danger', title: 'Entfernen', onclick: () => { rows.splice(i, 1); render(); } }, '🗑')),
+        h('details', { open: r.deputies.size ? true : null }, h('summary', null, `Vertretung für diesen Zeitraum${r.deputies.size ? ` (${r.deputies.size})` : ' – sonst die übliche'}`), pp.el));
+    }) : [h('p', { class: 'muted' }, 'Keine Abwesenheit eingetragen.')]));
+  };
+  render();
+  openDialog({
+    title: p.self ? 'Meine Abwesenheit' : `Abwesenheit: ${nameOf(p)}`, wide: true,
+    body: h('div', { class: 'admin' },
+      h('p', { class: 'hint' }, 'Nur der Zeitraum wird angezeigt – kein Grund. Vergangene Einträge werden automatisch gelöscht.' + (S.site.absences === 'all' ? ' Sichtbar für alle, die das Telefonbuch öffnen.' : ' Sichtbar für angemeldete Personen.')),
+      list,
+      h('button', { type: 'button', onclick: () => { rows.push({ from: S.today, to: S.today, deputies: new Set() }); render(); } }, '＋ Zeitraum hinzufügen')),
+    buttons: ['spacer', { label: 'Abbrechen' }, { label: 'Speichern', cls: 'primary', onClick: async () => {
+      try {
+        await api('PUT', `/api/employees/${p.id}/absences`, { absences: rows.map((r) => ({ from: r.from, to: r.to, deputies: [...r.deputies] })) });
+        toast('Abwesenheit gespeichert', 'ok'); await reload();
+      } catch (e) { toast(e.message, 'err'); return false; }
+    } }],
+  });
+}
+
+// ---------- Fehler melden ----------
+
+const REPORT_FIELDS = [['phone', 'Telefon'], ['mobile', 'Mobil'], ['room', 'Raum'], ['amt', 'Amt'], ['name', 'Name'], ['email', 'E-Mail'], ['org', 'Organisation'], ['deputies', 'Vertretung'], ['other', 'Sonstiges']];
+function currentValue(p, f) {
+  if (!p) return '';
+  switch (f) {
+    case 'name': return p.display;
+    case 'org': { const u = S.unitById.get(p.orgUnit); return u ? unitPath(u).map(unitLabel).join(' › ') : '—'; }
+    case 'deputies': return (p.deputies || []).map(empByID).filter(Boolean).map(nameOf).join(', ') || '—';
+    case 'other': return '';
+    default: return p[f] || '—';
+  }
+}
+
+function reportDialog(p) {
+  const fieldSel = h('select', null, REPORT_FIELDS.map(([k, l]) => h('option', { value: k }, l)));
+  const curEl = h('div', { class: 'kv' });
+  const sugg = h('input', { type: 'text', maxlength: 255, placeholder: 'Wie lautet die richtige Angabe?' });
+  const msg = h('textarea', { rows: 3, maxlength: 500, placeholder: 'z. B. „ist ins Amt 20 gewechselt“' });
+  const ad = new Set(p.source === 'ad' ? S.me.features.adLocked || [] : []);
+  const showCur = () => {
+    const f = fieldSel.value;
+    const v = currentValue(p, f);
+    const fmap = { name: 'lastName' };
+    curEl.replaceChildren(h('span', { class: 'k' }, 'Aktuell'), h('span', null, v || '—', ad.has(fmap[f] || f) ? h('small', { class: 'muted' }, ' (kommt aus dem Active Directory)') : ''));
+    curEl.hidden = f === 'other';
+  };
+  fieldSel.addEventListener('change', showCur);
+  showCur();
+  openDialog({
+    title: `Fehler melden: ${p.display}`,
+    body: h('div', { class: 'form-grid' },
+      h('p', { class: 'hint full' }, 'Die Meldung geht an die Administration. Du siehst den Bearbeitungsstand unter Menü → 🚩 Meine Meldungen.'),
+      h('div', { class: 'full' }, field('Was stimmt nicht?', fieldSel)), h('div', { class: 'full' }, curEl),
+      h('div', { class: 'full' }, field('Richtig wäre', sugg)), h('div', { class: 'full' }, field('Hinweis (optional)', msg))),
+    buttons: ['spacer', { label: 'Abbrechen' }, { label: '🚩 Melden', cls: 'primary', onClick: async () => {
+      try { await api('POST', `/api/employees/${p.id}/reports`, { field: fieldSel.value, suggestion: sugg.value, message: msg.value }); toast('Danke! Die Meldung ist eingegangen.', 'ok'); }
+      catch (e) { toast(e.message, 'err'); return false; }
+    } }],
+  });
+  setTimeout(() => sugg.focus(), 30);
+}
+
+const REPORT_STATUS = { open: '⏳ offen', done: '✅ erledigt', rejected: '✖ abgelehnt' };
+
+async function myReportsDialog() {
+  let r;
+  try { r = await api('GET', '/api/reports/mine'); } catch (e) { toast(e.message, 'err'); return; }
+  openDialog({
+    title: 'Meine Meldungen', wide: true,
+    body: h('div', { class: 'admin' }, r.reports.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'tbl' },
+      h('thead', null, h('tr', null, ['Datum', 'Eintrag', 'Was', 'Vorschlag', 'Stand', 'Antwort'].map((x) => h('th', null, x)))),
+      h('tbody', null, r.reports.map((x) => h('tr', null, h('td', null, fmtDate(x.createdAt)), h('td', null, x.target), h('td', null, r.fields[x.field] || x.field), h('td', null, x.suggestion || x.message || ''), h('td', null, REPORT_STATUS[x.status] || x.status), h('td', { class: 'msg' }, x.note || '')))))) : h('p', { class: 'muted' }, 'Du hast noch nichts gemeldet.')),
+    buttons: ['spacer', { label: 'Schließen', cls: 'primary' }],
+  });
+}
+
+async function reportsDialog(status = 'open') {
+  let r;
+  try { r = await api('GET', '/api/admin/reports?status=' + status); } catch (e) { toast(e.message, 'err'); return; }
+  S.openReports = r.open;
+  const setStatus = async (x, st) => {
+    let note = x.note || '';
+    const inp = $(`#rn-${x.id}`);
+    if (inp) note = inp.value;
+    try { await api('PUT', `/api/admin/reports/${x.id}`, { status: st, note }); toast(REPORT_STATUS[st], 'ok'); } catch (e) { toast(e.message, 'err'); }
+    reportsDialog(status);
+  };
+  const tabs = h('div', { class: 'seg small' }, Object.entries({ open: 'Offen', done: 'Erledigt', rejected: 'Abgelehnt', all: 'Alle' }).map(([k, l]) => h('button', { type: 'button', class: k === status ? 'active' : '', onclick: () => reportsDialog(k) }, l + (k === 'open' ? ` (${r.open})` : ''))));
+  const rows = r.reports.map((x) => {
+    const p = x.employeeId ? empByID(x.employeeId) : null;
+    const fmap = { name: 'lastName' };
+    const adLocked = p && p.source === 'ad' && (S.me.features.adLocked || []).includes(fmap[x.field] || x.field);
+    return h('tr', { class: x.status },
+      h('td', null, fmtDate(x.createdAt)),
+      h('td', null, p ? h('button', { type: 'button', class: 'linkish', onclick: () => { $('#dlg').close(); goPerson(p.key); } }, x.target) : h('span', { class: 'muted', title: 'Eintrag gelöscht' }, x.target)),
+      h('td', null, r.fields[x.field] || x.field, adLocked ? h('div', { class: 'badge ad', title: 'Feld kommt aus dem AD – dort korrigieren' }, 'AD') : null),
+      h('td', null, p ? currentValue(p, x.field) : ''),
+      h('td', null, x.suggestion ? h('b', null, x.suggestion) : '', x.message ? h('div', { class: 'muted' }, x.message) : ''),
+      h('td', null, x.reporterName || x.reporter),
+      h('td', { class: 'rep-act' },
+        h('input', { id: `rn-${x.id}`, type: 'text', value: x.note || '', placeholder: 'Antwort/Notiz', maxlength: 500 }),
+        h('div', { class: 'btnrow' },
+          x.status !== 'done' ? h('button', { type: 'button', title: 'Erledigt', onclick: () => setStatus(x, 'done') }, '✅') : null,
+          x.status !== 'rejected' ? h('button', { type: 'button', title: 'Ablehnen', onclick: () => setStatus(x, 'rejected') }, '✖') : null,
+          x.status !== 'open' ? h('button', { type: 'button', title: 'Wieder öffnen', onclick: () => setStatus(x, 'open') }, '↺') : null,
+          p && !adLocked && x.field !== 'other' ? h('button', { type: 'button', title: 'Eintrag bearbeiten', onclick: () => { if (x.field === 'deputies') editDeputies(p); else editPerson(p); } }, '✏️') : null,
+          x.status !== 'open' && x.resolvedBy ? h('small', { class: 'muted' }, `${x.resolvedBy}, ${fmtDate(x.resolvedAt)}`) : null)));
+  });
+  openDialog({
+    title: 'Gemeldete Fehler', wide: true,
+    body: h('div', { class: 'admin' }, h('div', { class: 'toolbar' }, tabs),
+      rows.length ? h('div', { class: 'table-wrap tall' }, h('table', { class: 'tbl reports' },
+        h('thead', null, h('tr', null, ['Datum', 'Eintrag', 'Was', 'Aktuell', 'Vorschlag / Hinweis', 'Von', 'Bearbeitung'].map((x) => h('th', null, x)))), h('tbody', null, rows)))
+        : h('p', { class: 'muted' }, status === 'open' ? 'Keine offenen Meldungen. 🎉' : 'Keine Meldungen.'),
+      h('p', { class: 'hint' }, 'Felder mit „AD“ werden im Active Directory gepflegt – dort korrigieren, der nächste Abgleich übernimmt es. Die Notiz sieht die meldende Person unter „Meine Meldungen“.')),
+    buttons: ['spacer', { label: 'Schließen', cls: 'primary' }],
+    onClose: () => reload(),
+  });
+}
+
+// ---------- Admin: Organisation ----------
+
+async function orgManager() {
+  await reload();
+  const allTags = S.tags.map((t) => t.name).sort(collator.compare);
+  const dlId = 'org-tags';
+  const tagName = (id) => (id ? (S.tagById.get(id) || {}).name || '' : '');
+  const levels = S.org.levels.map((l) => ({ name: l.name, leaderTag: tagName(l.leaderTag), deputyTag: tagName(l.deputyTag) }));
+  const lvBox = h('div', { class: 'lv-list' });
+  const renderLv = () => {
+    lvBox.replaceChildren(h('div', { class: 'lv-row head' }, h('span', null, 'Ebene'), h('span', null, 'Name'), h('span', null, '★ Schlagwort Leitung'), h('span', null, '☆ Schlagwort Stellvertretung'), h('span')),
+      ...levels.map((l, i) => h('div', { class: 'lv-row' },
+        h('span', { class: 'muted' }, String(i + 1)),
+        h('input', { type: 'text', value: l.name, maxlength: 40, oninput: (e) => { l.name = e.target.value; } }),
+        h('input', { type: 'text', value: l.leaderTag, list: dlId, maxlength: 60, placeholder: `z. B. ${l.name || 'Amt'}sleitung`, oninput: (e) => { l.leaderTag = e.target.value; } }),
+        h('input', { type: 'text', value: l.deputyTag, list: dlId, maxlength: 60, placeholder: `z. B. Stv. ${l.name || 'Amt'}sleitung`, oninput: (e) => { l.deputyTag = e.target.value; } }),
+        h('button', { type: 'button', class: 'icon danger', title: 'Ebene entfernen', disabled: levels.length <= 1 || null, onclick: () => { levels.splice(i, 1); renderLv(); } }, '🗑'))),
+      h('datalist', { id: dlId }, allTags.map((t) => h('option', { value: t }))));
+  };
+  renderLv();
+  const tree = h('div', { class: 'org-tree' });
+  const walk = (k, depth) => {
+    for (const u of S.unitKids.get(k) || []) {
+      const n = unitMembers(u.id, false).length;
+      const { leaders } = unitLeads(u);
+      tree.append(h('div', { class: 'org-trow', style: { paddingLeft: 8 + depth * 22 + 'px' } },
+        h('span', { class: 'org-level' }, (S.org.levels[depth] || {}).name || ''),
+        h('b', null, unitLabel(u)),
+        h('span', { class: 'muted' }, `${n} direkt${leaders.length ? ' · ★ ' + leaders.map(nameOf).join(', ') : ''}`),
+        h('span', { class: 'grow' }),
+        depth + 1 < S.org.levels.length ? h('button', { type: 'button', class: 'icon', title: 'Untereinheit anlegen', onclick: () => unitDialog(null, u.id) }, '➕') : null,
+        h('button', { type: 'button', class: 'icon', title: 'Personen zuordnen', onclick: () => membersDialog(u, true) }, '👥'),
+        h('button', { type: 'button', class: 'icon', title: 'Bearbeiten', onclick: () => unitDialog(u) }, '✏️'),
+        h('button', { type: 'button', class: 'icon danger', title: 'Löschen', onclick: async () => {
+          const kids = (S.unitKids.get(u.id) || []).length;
+          if (!(await confirmDialog('Einheit löschen', `„${unitLabel(u)}“ löschen? ${kids ? kids + ' Untereinheit(en) und ' : ''}${n} zugeordnete Person(en) wandern eine Ebene nach oben.`, 'Löschen', true))) { orgManager(); return; }
+          try { await api('DELETE', `/api/org/units/${u.id}`); toast('Gelöscht', 'ok'); } catch (e) { toast(e.message, 'err'); }
+          orgManager();
+        } }, '🗑')));
+      walk(u.id, depth + 1);
+    }
+  };
+  walk(0, 0);
+  if (!tree.children.length) tree.append(h('p', { class: 'muted' }, 'Noch keine Einheiten.'));
+  openDialog({
+    title: 'Organisation verwalten', wide: true,
+    body: h('div', { class: 'admin' },
+      h('h4', null, 'Ebenen'),
+      h('p', { class: 'hint' }, 'Je Ebene kannst du zwei Schlagworte festlegen. Wer einer Einheit zugeordnet ist und das Leitungs- bzw. Stellvertretungs-Schlagwort dieser Ebene trägt, erscheint dort als Leitung bzw. Stellvertretung. Diese Schlagworte vergeben nur Administratoren. Neue Schlagworte werden in „Sonstiges“ angelegt.'),
+      lvBox,
+      h('div', { class: 'toolbar' },
+        h('button', { type: 'button', disabled: levels.length >= 6 || null, onclick: () => { levels.push({ name: '', leaderTag: '', deputyTag: '' }); renderLv(); } }, '＋ Ebene'),
+        h('button', { type: 'button', class: 'primary', onclick: async () => {
+          try { await api('PUT', '/api/org/levels', { levels }); toast('Ebenen gespeichert', 'ok'); } catch (e) { toast(e.message, 'err'); return; }
+          orgManager();
+        } }, 'Ebenen speichern')),
+      h('h4', null, 'Einheiten'),
+      h('div', { class: 'toolbar' }, h('button', { type: 'button', onclick: () => unitDialog(null, 0) }, `＋ ${(S.org.levels[0] || {}).name || 'Einheit'} anlegen`)),
+      tree),
+    buttons: ['spacer', { label: 'Schließen', cls: 'primary' }],
+  });
+}
+
+function unitDialog(u, parent) {
+  const isNew = !u;
+  const name = h('input', { type: 'text', value: u ? u.name : '', maxlength: 150 });
+  const short = h('input', { type: 'text', value: u ? u.short || '' : '', maxlength: 30, placeholder: 'z. B. 10 oder 10.1' });
+  const sort = h('input', { type: 'number', value: u ? u.sort : 0, min: 0, max: 99999, class: 'num-in' });
+  // eigene Einheit und deren Untereinheiten sind als Elternteil nicht zulässig
+  const parentSel = unitSelect(u ? u.parent || 0 : parent || 0, u ? u.id : 0);
+  if (u) {
+    const bad = new Set();
+    const walk = (k) => { for (const c of S.unitKids.get(k) || []) { bad.add(c.id); walk(c.id); } };
+    walk(u.id);
+    for (const o of [...parentSel.options]) if (bad.has(+o.value)) o.remove();
+  }
+  parentSel.options[0].textContent = '— oberste Ebene —';
+  const leaders = new Set(u ? u.leaders || [] : []), deputies = new Set(u ? u.deputies || [] : []);
+  const lp = personPicker({ people: pickList(0), selected: leaders, placeholder: 'Person suchen …' });
+  const dp = personPicker({ people: pickList(0), selected: deputies, placeholder: 'Person suchen …' });
+  openDialog({
+    title: isNew ? 'Einheit anlegen' : `Einheit: ${unitLabel(u)}`, wide: true,
+    body: h('div', { class: 'form-grid' },
+      field('Name', name), field('Kürzel', short), field('Übergeordnet', parentSel), field('Sortierung', sort),
+      h('details', { class: 'full share' }, h('summary', null, h('b', null, 'Leitung fest eintragen (optional)')),
+        h('p', { class: 'hint' }, 'Normalerweise ergibt sich die Leitung aus Zuordnung + Schlagwort der Ebene. Hier eingetragene Personen kommen zusätzlich dazu – z. B. wenn sie keiner Einheit direkt zugeordnet sind.'),
+        h('div', { class: 'share-cols' }, h('div', null, h('h4', null, '★ Leitung'), lp.el), h('div', null, h('h4', null, '☆ Stellvertretung'), dp.el)))),
+    buttons: ['spacer', { label: 'Zurück', onClick: () => { orgManager(); return false; } }, { label: 'Speichern', cls: 'primary', onClick: async () => {
+      const body = { name: name.value, short: short.value, sort: +sort.value || 0, parent: +parentSel.value, leaders: [...leaders], deputies: [...deputies] };
+      try {
+        if (isNew) await api('POST', '/api/org/units', body); else await api('PUT', `/api/org/units/${u.id}`, body);
+        toast('Gespeichert', 'ok');
+      } catch (e) { toast(e.message, 'err'); return false; }
+      orgManager();
+      return false;
+    } }],
+  });
+  setTimeout(() => name.focus(), 30);
+}
+
+function membersDialog(u, fromManager) {
+  const current = new Set(S.people.filter((p) => p.kind === 'emp' && p.orgUnit === u.id).map((p) => p.id));
+  const sel = new Set(current);
+  const info = h('span', { class: 'muted' });
+  const upd = () => {
+    const add = [...sel].filter((id) => !current.has(id)).length, rm = [...current].filter((id) => !sel.has(id)).length;
+    info.textContent = `${sel.size} zugeordnet` + (add || rm ? ` (＋${add} / −${rm})` : '');
+  };
+  const people = S.people.filter((p) => p.kind === 'emp').map((p) => {
+    const x = pickPerson(p);
+    const o = S.unitById.get(p.orgUnit);
+    if (o && o.id !== u.id) x.amt = (x.amt ? x.amt + ' · ' : '') + 'jetzt: ' + (o.short || o.name);
+    return x;
+  });
+  const pp = personPicker({ people, selected: sel, onChange: upd, placeholder: 'Suchen – z. B. den Amt-Text, dann „alle Treffer auswählen“', selectAll: true, limit: 100 });
+  upd();
+  const back = () => (fromManager ? orgManager() : reload());
+  openDialog({
+    title: `Zuordnung: ${unitLabel(u)}`, wide: true,
+    body: h('div', { class: 'admin' }, h('p', { class: 'hint' }, 'Wer gehört direkt zu dieser Einheit? Personen aus anderen Einheiten werden dabei umgehängt. Die Anzeige „Amt“ bleibt unverändert.'), info, pp.el),
+    buttons: ['spacer', { label: 'Abbrechen', onClick: () => { back(); return false; } }, { label: 'Speichern', cls: 'primary', onClick: async () => {
+      const add = [...sel].filter((id) => !current.has(id)), remove = [...current].filter((id) => !sel.has(id));
+      try { const r = await api('POST', `/api/org/units/${u.id}/members`, { add, remove }); toast(`＋${r.added} / −${r.removed}`, 'ok'); } catch (e) { toast(e.message, 'err'); return false; }
+      back();
+      return false;
+    } }],
+  });
+  setTimeout(() => pp.focus(), 30);
+}
+
 // ---------- Admin: AD-Abgleich ----------
 
 async function syncDialog() {
@@ -1002,7 +1526,7 @@ async function storageDialog() {
 async function auditDialog() {
   const q = h('input', { type: 'search', placeholder: 'Suchen (Benutzer, Aktion, Eintrag …)' });
   const tbody = h('tbody');
-  const ACT = { mysql_import: 'Übernahme aus MySQL', login: 'Anmeldung', login_failed: 'Anmeldung fehlgeschlagen', tags_update: 'Schlagworte geändert', avatar_update: 'Avatar geändert', employee_create: 'Eintrag angelegt', employee_update: 'Stammdaten geändert', employee_delete: 'Eintrag gelöscht', tag_create: 'Schlagwort angelegt', tag_update: 'Schlagwort geändert', tag_merge: 'Schlagworte zusammengeführt', tag_delete: 'Schlagwort gelöscht', tag_cleanup: 'Unbenutzte Schlagworte gelöscht', ad_sync: 'AD-Abgleich', category_create: 'Kategorie angelegt', category_update: 'Kategorie geändert', category_delete: 'Kategorie gelöscht', storage_online: 'Datenbank wieder erreichbar' };
+  const ACT = { mysql_import: 'Übernahme aus MySQL', login: 'Anmeldung', login_failed: 'Anmeldung fehlgeschlagen', tags_update: 'Schlagworte geändert', avatar_update: 'Avatar geändert', employee_create: 'Eintrag angelegt', employee_update: 'Stammdaten geändert', employee_delete: 'Eintrag gelöscht', tag_create: 'Schlagwort angelegt', tag_update: 'Schlagwort geändert', tag_merge: 'Schlagworte zusammengeführt', tag_delete: 'Schlagwort gelöscht', tag_cleanup: 'Unbenutzte Schlagworte gelöscht', ad_sync: 'AD-Abgleich', category_create: 'Kategorie angelegt', category_update: 'Kategorie geändert', category_delete: 'Kategorie gelöscht', storage_online: 'Datenbank wieder erreichbar', deputies_update: 'Vertretung geändert', absences_update: 'Abwesenheit geändert', report_create: 'Fehler gemeldet', report_done: 'Meldung erledigt', report_rejected: 'Meldung abgelehnt', report_open: 'Meldung wieder geöffnet', org_levels: 'Ebenen geändert', org_unit_create: 'Einheit angelegt', org_unit_update: 'Einheit geändert', org_unit_delete: 'Einheit gelöscht', org_members: 'Einheit: Zuordnung' };
   const load = async () => {
     try {
       const r = await api('GET', '/api/admin/audit?limit=500&q=' + encodeURIComponent(q.value));

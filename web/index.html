@@ -48,6 +48,12 @@
 
     <main class="panes">
       <section class="pane left" aria-label="Personen">
+        <div id="viewbar" class="viewbar" hidden>
+          <div class="seg small" role="group" aria-label="Ansicht">
+            <button type="button" data-view="list" class="active">☰ Liste</button>
+            <button type="button" data-view="org">🏢 Organisation</button>
+          </div>
+        </div>
         <div class="thead">
           <div class="cols labels">
             <button type="button" class="col-label c-name" data-sort="name">Name <small>(Nachname, Vorname)</small></button>
@@ -70,6 +76,7 @@
           </div>
         </div>
         <div id="people" class="list" role="listbox" aria-multiselectable="true" aria-label="Personen"></div>
+        <div id="orgview" class="list orgview" hidden></div>
         <div id="people-empty" class="empty" hidden>Niemand gefunden.</div>
         <div id="people-foot" class="foot"></div>
       </section>

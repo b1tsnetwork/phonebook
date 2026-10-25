@@ -40,6 +40,21 @@ Allgemein sichtbare Einträge können nur Administratoren anlegen.
 - **Löschen mit Folge-Kategorie:** Beim Löschen wählt man, in welche Kategorie die vorhandenen Schlagworte wandern. Die letzte Kategorie lässt sich nicht löschen.
 - Filterknöpfe, Farben und die Auswahl im Schlagwort-Editor richten sich automatisch nach den Kategorien.
 
+**Organigramm** (oben links *☰ Liste* / *🏢 Organisation*)
+- Administratoren legen unter *Verwaltung → 🏢 Organisation verwalten* die **Ebenen** fest (Standard: Dezernat › Amt › Sachgebiet › Team, bis zu 6) und darunter die **Einheiten** als Baum (Name, Kürzel, Sortierung).
+- Personen werden einer Einheit **zugeordnet**, im Stammdaten-Dialog oder gesammelt über *👥 Zuordnung*. Dort sucht man z. B. nach dem Amt-Text und wählt dann „alle Treffer“. Das Feld **„Amt“ bleibt Freitext** und wird wie bisher angezeigt. Die Ebenen wirken nur in der Organisationsansicht.
+- **Leitung und Stellvertretung** ergeben sich aus **Zuordnung + Schlagwort**: Je Ebene gibt es ein Leitungs- und ein Stellvertretungs-Schlagwort, z. B. Ebene „Amt“: *Amtsleitung* / *Stv. Amtsleitung*. Wer dem Hauptamt zugeordnet ist und *Amtsleitung* trägt, ist Leitung des Hauptamts. Diese Schlagworte **vergeben nur Administratoren**. Mitarbeitende sehen sie im eigenen Schlagwort-Editor gesperrt (🔒) und können sie weder setzen noch entfernen; das prüft der Server. Zusätzlich lassen sich Personen je Einheit fest als Leitung/Stellvertretung eintragen, z. B. ohne Zuordnung.
+- In der Ansicht klickt man sich durch die Ebenen (Brotkrumen oben). Jede Einheit zeigt Leitung, Stellvertretung, Untereinheiten mit Personenzahl und die zugeordneten Personen, wahlweise inkl. Untereinheiten. Die Suchfelder und Schlagwort-Filter wirken auch hier, z. B. „Ersthelfer im Hauptamt“.
+
+**Vertretung & Abwesenheit**
+- Jede Person legt unter *Menü → 👥 Meine Vertretung* eine oder mehrere Vertretungen fest, Admins für alle Einträge, also auch für Einrichtungen. Auf der Visitenkarte steht „Vertretung: …“, ein Klick springt direkt zur Person. Umgekehrt zeigt „↩ Vertritt“, für wen jemand einspringt.
+- Unter *🏖 Meine Abwesenheit* trägt man Zeiträume ein, optional mit abweichender Vertretung. In der Liste erscheint „🏖 bis 29.10.“, auf der Karte Zeitraum und Vertretung. **Datensparsam:** Es wird kein Grund gespeichert, und vergangene Zeiträume werden automatisch gelöscht. Sichtbarkeit über `features.absences`: `all` (Standard, auch ohne Anmeldung), `users` (nur Angemeldete) oder `off`. Was „heute“ ist, bestimmt `timezone` (Standard `Europe/Berlin`).
+
+**Fehler melden**
+- Auf jeder Visitenkarte gibt es **🚩 Fehler melden** (angemeldet): Was stimmt nicht (Telefon, Raum, Amt, Organisation, Vertretung …), der richtige Wert und ein Hinweis. Der aktuelle Wert wird angezeigt, AD-gepflegte Felder sind gekennzeichnet.
+- Administratoren sehen unter *Verwaltung → 🚩 Meldungen (n offen)* eine Übersicht: aktueller Wert neben dem Vorschlag, Sprung zum Eintrag bzw. Stammdaten-Dialog, **erledigt / abgelehnt / wieder öffnen** mit Antwort-Notiz. Bei AD-Feldern weist ein „AD“ darauf hin, dass im Active Directory korrigiert werden muss.
+- Die meldende Person sieht Stand und Antwort unter *Menü → 🚩 Meine Meldungen*. Schutz vor Spam: höchstens `features.maxOpenReportsPerUser` (Standard 20) offene Meldungen je Person. Abschalten mit `"reports": false`.
+
 **Avatar-Editor** (Menü → *Mein Avatar*, oder Klick auf den eigenen Avatar)
 - Der Kopf hat **16×16 Pixel je Seite** (Version 2, vorher 8×8), dazu eine Überzug-Ebene und Aufbauten wie Hutkrempe, Dutt, Zöpfe, Ohren und Kopfhörer. Er wird in 3D gezeichnet und lässt sich mit der Maus drehen. Alte Avatare werden automatisch übernommen, gemalte Pixel dabei auf 16×16 vergrößert.
 - **Standard ist neutral grau.** Damit gibt es keine Vorgabe zu Geschlecht oder Hautfarbe. Grautöne, Hauttöne, Fantasiefarben und eine freie Farbe stehen zur Auswahl.
@@ -186,6 +201,8 @@ TB_PASSWORD='mindestens-12-zeichen' ./telefonbuch useradd -config config.json -a
 
 Es sind keine Secrets nötig, der Workflow nutzt `GITHUB_TOKEN`. Bei privaten Repositories ist das Paket anfangs privat: unter *Packages → Package settings* die Sichtbarkeit bzw. den Zugriff freigeben. Die Versionsnummer kommt aus dem Git-Tag (`telefonbuch version`).
 
+**Dependabot** (`.github/dependabot.yml`) prüft jeden Montag die Go-Module, die GitHub Actions und die Basis-Images im `Dockerfile`, monatlich auch `docker-compose.yml`. MySQL bleibt dabei auf der LTS-Linie 8.4. Kleinere Updates kommen gebündelt als ein PR je Bereich, und der Workflow testet jeden PR mit MySQL. Die Go-Version für die Tests liest der Workflow aus `go.mod`.
+
 ### 3. Starten
 
 ```bash
@@ -289,6 +306,7 @@ auth.go        Sitzungen, CSRF, Login/Logout, Rate-Limit, lokale Konten (PBKDF2)
 ldap.go        LDAPS: Bind, Benutzersuche, Gruppenprüfung, seitenweise Suche
 adsync.go      AD-Abgleich
 api.go         REST-API: Verzeichnis, Schlagworte, Stammdaten, private Kontakte, Protokoll
+features.go    Vertretungen, Abwesenheiten, Organigramm (Ebenen/Einheiten), Fehlermeldungen
 avatar.go      Prüfung der Avatar-Daten
 seed.go        Demo-Daten
 client.go      Download des Windows-Clients (ZIP mit eingetragener Adresse)
@@ -311,6 +329,10 @@ web/           Frontend (index.html, css/app.css, js/*.js)
 | `POST/PUT/DELETE /api/employees[/{id}]` | Admin |
 | `POST/PUT/DELETE /api/private[/{id}]` (mit `shares: {employees: [IDs], amts: [Ämter]}`) | angemeldet (nur eigene) |
 | `POST /api/categories`, `PUT /api/categories/{key}`, `POST /api/categories/{key}/delete` (`{moveTo}`) | Admin |
+| `PUT /api/employees/{id}/deputies`, `PUT /api/employees/{id}/absences` | eigener Eintrag oder Admin |
+| `POST /api/employees/{id}/reports`, `GET /api/reports/mine` | angemeldet |
+| `GET /api/admin/reports`, `PUT /api/admin/reports/{id}` | Admin |
+| `PUT /api/org/levels`, `POST/PUT/DELETE /api/org/units[/{id}]`, `POST /api/org/units/{id}/members` | Admin |
 | `GET/POST /api/tags`, `PUT/DELETE /api/tags/{id}`, `POST /api/tags/{id}/merge`, `POST /api/tags/cleanup` | Admin |
 | `GET/POST /api/admin/sync`, `POST /api/admin/ldap-test`, `GET /api/admin/audit` | Admin |
 | `GET /api/admin/storage`, `POST /api/admin/storage/import-mysql`, `POST /api/admin/storage/snapshot` | Admin |

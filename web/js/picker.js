@@ -3,7 +3,7 @@ import { h, norm, normAlt, tokens, collator } from './util.js';
 
 // people: [{ id, lastName, firstName, amt, avatarURL }]
 // selected: Set von IDs (wird direkt verändert); onChange() nach jeder Änderung
-export function personPicker({ people, selected, onChange, placeholder = 'Person suchen …', limit = 60 }) {
+export function personPicker({ people, selected, onChange, placeholder = 'Person suchen …', limit = 60, selectAll = false }) {
   const list = [...people].sort((a, b) => collator.compare(a.lastName + ' ' + a.firstName, b.lastName + ' ' + b.firstName));
   const byId = new Map(list.map((p) => [p.id, p]));
   const idx = new Map(list.map((p) => [p.id, norm(`${p.lastName} ${p.firstName} ${p.amt || ''}`) + ' ' + normAlt(`${p.lastName} ${p.firstName} ${p.amt || ''}`)]));
@@ -11,6 +11,8 @@ export function personPicker({ people, selected, onChange, placeholder = 'Person
   const chips = h('div', { class: 'pick-chips' });
   const box = h('div', { class: 'pick-list', role: 'listbox', 'aria-multiselectable': 'true' });
   const more = h('div', { class: 'pick-more muted' });
+  let hitsNow = [];
+  const allBtn = selectAll ? h('button', { type: 'button', class: 'linkish', onclick: () => { for (const p of hitsNow) selected.add(p.id); render(); onChange && onChange(); } }) : null;
   const name = (p) => [p.lastName, p.firstName].filter(Boolean).join(', ');
 
   const toggle = (id) => {
@@ -36,10 +38,16 @@ export function personPicker({ people, selected, onChange, placeholder = 'Person
         p.amt ? h('small', { class: 'muted' }, p.amt) : null);
     }));
     more.textContent = hits.length > limit ? `… ${hits.length - limit} weitere – Suche verfeinern` : (hits.length ? '' : 'Niemand gefunden.');
+    hitsNow = hits;
+    if (allBtn) {
+      const open = hits.filter((p) => !selected.has(p.id)).length;
+      allBtn.textContent = `＋ alle ${hits.length} Treffer auswählen`;
+      allBtn.hidden = !q.value.trim() || !open;
+    }
   }
   q.addEventListener('input', render);
   render();
-  return { el: h('div', { class: 'picker' }, chips, q, box, more), focus: () => q.focus(), render };
+  return { el: h('div', { class: 'picker' }, chips, q, allBtn, box, more), focus: () => q.focus(), render };
 }
 
 // Ämter: Eingabe mit Vorschlägen; selected: Array (wird direkt verändert)

@@ -80,6 +80,11 @@
     "userCreatesTags": true,
     "maxTagsPerUser": 40,
     "maxPrivateContacts": 300,
-    "autoCreateOnLogin": true
-  }
+    "autoCreateOnLogin": true,
+    "absences": "all",
+    "reports": true,
+    "maxOpenReportsPerUser": 20
+  },
+
+  "timezone": "Europe/Berlin"
 }

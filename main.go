@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	_ "time/tzdata" // Zeitzonen auch im distroless-Image
 )
 
 //go:embed web
@@ -112,6 +113,7 @@ func main() {
 	}
 	go app.storageLoop(ctx)
 	go app.reconnectLoop(ctx)
+	go app.absenceGC(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
@@ -199,6 +201,17 @@ func (a *App) routes(dev bool) http.Handler {
 	mux.HandleFunc("POST /api/tags/{id}/merge", a.requireAdmin(a.handleMergeTag))
 	mux.HandleFunc("DELETE /api/tags/{id}", a.requireAdmin(a.handleDeleteTag))
 	mux.HandleFunc("POST /api/tags/cleanup", a.requireAdmin(a.handleDeleteUnusedTags))
+	mux.HandleFunc("PUT /api/employees/{id}/deputies", a.requireAuth(a.handleSetDeputies))
+	mux.HandleFunc("PUT /api/employees/{id}/absences", a.requireAuth(a.handleSetAbsences))
+	mux.HandleFunc("POST /api/employees/{id}/reports", a.requireAuth(a.handleCreateReport))
+	mux.HandleFunc("GET /api/reports/mine", a.requireAuth(a.handleMyReports))
+	mux.HandleFunc("GET /api/admin/reports", a.requireAdmin(a.handleListReports))
+	mux.HandleFunc("PUT /api/admin/reports/{id}", a.requireAdmin(a.handleUpdateReport))
+	mux.HandleFunc("PUT /api/org/levels", a.requireAdmin(a.handleSetOrgLevels))
+	mux.HandleFunc("POST /api/org/units", a.requireAdmin(a.handleCreateOrgUnit))
+	mux.HandleFunc("PUT /api/org/units/{id}", a.requireAdmin(a.handleUpdateOrgUnit))
+	mux.HandleFunc("DELETE /api/org/units/{id}", a.requireAdmin(a.handleDeleteOrgUnit))
+	mux.HandleFunc("POST /api/org/units/{id}/members", a.requireAdmin(a.handleOrgMembers))
 	mux.HandleFunc("POST /api/categories", a.requireAdmin(a.handleCreateCategory))
 	mux.HandleFunc("PUT /api/categories/{key}", a.requireAdmin(a.handleUpdateCategory))
 	mux.HandleFunc("POST /api/categories/{key}/delete", a.requireAdmin(a.handleDeleteCategory))

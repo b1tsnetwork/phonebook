@@ -177,3 +177,17 @@ func (a *App) readOnlyGuard(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+func (r *readOnlyStore) SetDeputies(context.Context, int64, []int64) error   { return ErrReadOnly }
+func (r *readOnlyStore) SetAbsences(context.Context, int64, []Absence) error { return ErrReadOnly }
+func (r *readOnlyStore) SetOrgUnit(context.Context, []int64, int64) (int, error) {
+	return 0, ErrReadOnly
+}
+func (r *readOnlyStore) CreateOrgUnit(context.Context, OrgUnit) (int64, error) { return 0, ErrReadOnly }
+func (r *readOnlyStore) UpdateOrgUnit(context.Context, OrgUnit) error          { return ErrReadOnly }
+func (r *readOnlyStore) DeleteOrgUnit(context.Context, int64) error            { return ErrReadOnly }
+func (r *readOnlyStore) SetSetting(context.Context, string, string) error      { return ErrReadOnly }
+func (r *readOnlyStore) CreateReport(context.Context, Report) (int64, error)   { return 0, ErrReadOnly }
+func (r *readOnlyStore) UpdateReport(context.Context, int64, string, string, string) error {
+	return ErrReadOnly
+}
