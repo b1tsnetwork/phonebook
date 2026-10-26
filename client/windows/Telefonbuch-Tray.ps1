@@ -26,7 +26,7 @@ param(
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$TbVersion = '1.1'
+$TbVersion = '1.2'
 $TbTitle = 'Telefonbuch'   # Seitentitel (<title>) – daran wird ein offenes Fenster erkannt
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -305,12 +305,21 @@ function Update-TbFavorites {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $feed = $Url.TrimEnd('/') + '/api/favorites/feed?t=' + [uri]::EscapeDataString($tok)
     $r = Invoke-RestMethod -Uri $feed -UseBasicParsing -TimeoutSec 6
-    $script:FavItems = @($r.items)
+    # leere Liste/fehlendes Feld sauber als 0 Einträge behandeln
+    $script:FavItems = @(@(Get-TbField $r 'items') | Where-Object { $null -ne $_ -and $_ -isnot [string] })
     $script:FavError = ''
     $script:FavLoaded = [DateTime]::Now
   } catch {
     $script:FavError = $_.Exception.Message
   }
+}
+
+# Feld eines JSON-Objekts lesen – fehlende Felder (StrictMode!) ergeben ''
+function Get-TbField($Obj, [string]$Name) {
+  if ($null -eq $Obj) { return '' }
+  $p = $Obj.PSObject.Properties[$Name]
+  if ($null -eq $p -or $null -eq $p.Value) { return '' }
+  return $p.Value
 }
 
 function Invoke-TbCall([string]$Number) {
@@ -342,16 +351,19 @@ function Build-TbFavMenu($Parent) {
     [void](& $add 'Keine Favoriten – im Telefonbuch mit ☆ markieren' $null $false)
   } else {
     foreach ($f in $script:FavItems) {
-      $num = $f.phone
-      if (-not $num) { $num = $f.viaTel }
-      if (-not $num) { $num = $f.mobile }
-      $label = [string]$f.name
-      if ($f.private) { $label = '🔒 ' + $label }
+      $num = [string](Get-TbField $f 'phone')
+      if (-not $num) { $num = [string](Get-TbField $f 'viaTel') }
+      if (-not $num) { $num = [string](Get-TbField $f 'mobile') }
+      $label = [string](Get-TbField $f 'name')
+      if (Get-TbField $f 'private') { $label = '🔒 ' + $label }
       if ($num) { $label += '   ☎ ' + $num }
-      if ($f.away) { $label += '   (abwesend bis ' + ([datetime]$f.away).ToString('dd.MM.') + ')' }
+      $away = [string](Get-TbField $f 'away')
+      if ($away) { try { $label += '   (abwesend bis ' + ([datetime]$away).ToString('dd.MM.') + ')' } catch { } }
       $mi = New-Object System.Windows.Forms.ToolStripMenuItem($label)
-      $mi.Tag = [string]$num
-      $mi.ToolTipText = (@($f.amt, $(if ($f.via) { 'bevorzugt: ' + $f.via }), $f.email) | Where-Object { $_ }) -join ' · '
+      $mi.Tag = $num
+      $via = [string](Get-TbField $f 'via')
+      $tip = @([string](Get-TbField $f 'amt'), $(if ($via) { 'bevorzugt: ' + $via } else { '' }), [string](Get-TbField $f 'email')) | Where-Object { $_ }
+      $mi.ToolTipText = ($tip -join ' · ')
       if ($num) { $mi.add_Click({ param($s, $e) try { Invoke-TbCall ([string]$s.Tag) } catch { Show-TbMessage $_.Exception.Message } }) } else { $mi.Enabled = $false }
       [void]$Parent.DropDownItems.Add($mi)
     }
@@ -432,8 +444,16 @@ $miExit.add_Click({ $script:Tray.Visible = $false; [System.Windows.Forms.Applica
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 [void]$menu.Items.Add($miExit)
 $menu.add_Opening({
-    if ((Get-TbFavToken) -and ([DateTime]::Now - $script:FavLoaded).TotalMinutes -gt 10) { Update-TbFavorites }
-    Build-TbFavMenu $miFav
+    try {
+      if ((Get-TbFavToken) -and ([DateTime]::Now - $script:FavLoaded).TotalMinutes -gt 10) { Update-TbFavorites }
+      Build-TbFavMenu $miFav
+    } catch {
+      # Ein Fehler bei den Favoriten darf das Menü nie verhindern
+      $miFav.DropDownItems.Clear()
+      $err = New-Object System.Windows.Forms.ToolStripMenuItem(('Favoriten: ' + $_.Exception.Message))
+      $err.Enabled = $false
+      [void]$miFav.DropDownItems.Add($err)
+    }
     $miAuto.Checked = Test-Path -LiteralPath $script:StartupLnk
     $miAuto.Enabled = (Test-Path -LiteralPath $script:StartMenuLnk) -or $miAuto.Checked
   })
