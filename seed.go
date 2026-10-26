@@ -259,6 +259,12 @@ func seedOrg(ctx context.Context, a *App, amter []string) error {
 			leadSet(members[2], "Stv. Amtsleitung")
 			_ = st.SetDeputies(ctx, members[1].ID, []int64{members[2].ID})
 		}
+		if num == "12" { // IT: bitte über Ticketsystem/Hotline (Beispiel-Kontaktweg)
+			if ch, err := st.CreateChannel(ctx, ContactChannel{Name: "IT-Support", ContactPref: ContactPref{TicketURL: "https://ticket.stadt.example/neu", TicketLabel: "Ticket erstellen",
+				Email: "it-support@stadt.example", Phone: "0123 456-100", Note: "Bitte nicht direkt anrufen – so geht nichts verloren.", HideDirect: true}}); err == nil {
+				_, _ = st.SetChannel(ctx, ids, ch)
+			}
+		}
 		if num == "12" && len(members) > 6 { // Sachgebiete der IT
 			for k, sg := range []string{"Infrastruktur", "Anwendungen & Support"} {
 				sid, err := st.CreateOrgUnit(ctx, OrgUnit{Parent: uid, Name: sg, Short: fmt.Sprintf("12.%d", k+1), Sort: k})

@@ -444,3 +444,28 @@ button.subtle:hover { color: var(--text); border-color: var(--line); }
   .badge.away { background: #15301f; border-color: #2c5a3c; color: #9fdab3; }
   .kv.away { background: #15261b; }
 }
+
+/* Bevorzugter Kontaktweg */
+.contact-pref { margin: 10px 0 4px; padding: 10px 12px; border: 1px solid #b9d4f3; background: #eef5fe; border-radius: 12px; }
+.contact-pref .cp-head { font-weight: 600; font-size: 13.5px; margin-bottom: 6px; }
+.contact-pref .cp-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.contact-pref .cp-note { font-size: 12.5px; margin-top: 6px; }
+a.btn { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel); color: var(--text); text-decoration: none; font-size: 13.5px; }
+a.btn:hover { border-color: var(--accent); }
+a.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.org-head .contact-pref { margin-top: 10px; }
+details.direct summary { cursor: pointer; font-size: 12.5px; color: var(--muted); padding: 2px 0; }
+details.direct[open] summary { margin-bottom: 4px; }
+.via small { color: var(--muted); }
+.badge.via { background: #eef5fe; border-color: #b9d4f3; color: #1f5a99; }
+@media (prefers-color-scheme: dark) {
+  .contact-pref { background: #13243a; border-color: #2c4f7a; }
+  .badge.via { background: #13243a; border-color: #2c4f7a; color: #9ec7f3; }
+}
+.ps-line { display: flex; gap: 6px; align-items: center; margin-top: 4px; min-width: 0; }
+.ps-line code { font-size: 11px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; display: inline-block; }
+.ps-script { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre; }
+.offscreen { position: fixed; left: -9999px; top: 0; }
+.small { font-size: 12px; }
+.tbl.suggest tr.take { background: #f1faf4; }
+@media (prefers-color-scheme: dark) { .tbl.suggest tr.take { background: #15261b; } }

@@ -160,6 +160,8 @@ async function reload(keepSel = true) {
     S.unitKids.get(k).push(u);
   }
   S.today = d.today || new Date().toISOString().slice(0, 10);
+  S.channels = d.channels || [];
+  S.chanById = new Map(S.channels.map((c) => [c.id, c]));
   S.openReports = d.openReports || 0;
   S.cats = d.categories || [];
   S.catByKey = new Map(S.cats.map((c) => [c.key, c]));
@@ -263,13 +265,17 @@ function buildRows() {
     const badges = [];
     badges.push(...privBadges(p, true));
     if (p.self) badges.push(h('span', { class: 'badge self' }, 'ich'));
+    const pref = p.kind === 'emp' ? personContact(p) : null;
+    if (pref) badges.push(h('span', { class: 'badge via', title: `Bitte bevorzugt: ${contactSummary(pref.contact)} (${pref.channel.name})` }, pref.contact.ticketUrl ? '🎫' : pref.contact.email ? '✉' : '☎'));
     const away = absNow(p);
     if (away) badges.push(h('span', { class: 'badge away', title: absenceText(p, away) }, '🏖 bis ' + fmtDay(away.to)));
     if (p.kind === 'emp' && (!p.active || p.hidden)) badges.push(h('span', { class: 'badge off' }, !p.active ? 'inaktiv' : 'ausgeblendet'));
     const row = h('div', { class: 'row', role: 'option', tabindex: '-1', dataset: { key: p.key } },
       h('div', { class: 'c-name' }, img, h('span', { class: 'nm' }, h('b', null, p.lastName), p.firstName ? ', ' + p.firstName : ''), ...badges),
-      cell('c-phone', '☎', null, p.phone, tel(p.phone)),
-      cell('c-mobile', '📱', null, p.mobile, tel(p.mobile)),
+      ...(pref && pref.contact.hideDirect
+        ? [cell('c-phone', '☎', `Bitte bevorzugt: ${contactSummary(pref.contact)} (${pref.channel.name})`, true, pref.contact.phone ? h('span', { class: 'via' }, tel(pref.contact.phone), h('small', null, ' Hotline')) : h('span', { class: 'via' }, pref.contact.ticketUrl ? '🎫 Ticket' : '✉ Mail')),
+          cell('c-mobile', '📱', null, false, h('span', { class: 'muted' }, '–'))]
+        : [cell('c-phone', '☎', null, p.phone, tel(p.phone)), cell('c-mobile', '📱', null, p.mobile, tel(p.mobile))]),
       cell('c-room', '🚪', p.room ? 'Raum ' + p.room : null, p.room, p.room || h('span', { class: 'muted' }, '–')),
       cell('c-amt', '🏛', p.amt, p.amt, p.amt || h('span', { class: 'muted' }, '–')));
     row.addEventListener('click', (e) => clickPerson(p.key, e));
@@ -455,10 +461,12 @@ function renderCard() {
         p.source === 'ad' ? h('span', { class: 'badge ad', title: 'Stammdaten kommen aus dem Active Directory' }, 'AD') : null,
         p.self ? h('span', { class: 'badge self' }, 'das bist du') : null,
         ...(isEmp ? personRoles(p).map((r) => h('span', { class: 'badge role', title: r.title }, r.label)) : []))));
+  const pref = isEmp ? personContact(p) : null;
+  const direct = [line('☎', 'Telefon', p.phone, telHref(p.phone)), line('📱', 'Mobil', p.mobile, telHref(p.mobile))].filter(Boolean);
   card.replaceChildren(h('div', { class: 'card' }, head,
+    pref ? contactBox(pref.channel) : null,
     h('div', { class: 'kvs' },
-      line('☎', 'Telefon', p.phone, telHref(p.phone)),
-      line('📱', 'Mobil', p.mobile, telHref(p.mobile)),
+      ...(pref && pref.contact.hideDirect && direct.length ? [h('details', { class: 'direct' }, h('summary', null, 'Direkte Durchwahl (nur wenn nötig)'), ...direct)] : direct),
       line('🚪', 'Raum', p.room),
       line('✉', 'E-Mail', p.email, p.email ? 'mailto:' + p.email : null),
       p.note ? h('div', { class: 'kv note' }, h('span', { class: 'k' }, '📝 Notiz'), h('span', null, p.note)) : null,
@@ -570,6 +578,7 @@ function toggleMenu() {
       item('🏷 Schlagworte verwalten', tagManager),
       item('🗂 Kategorien verwalten', categoryManager),
       item('🏢 Organisation verwalten', orgManager),
+      item('💬 Kontaktwege verwalten', channelManager),
       ...(S.site.reports !== false ? [item(`🚩 Meldungen${S.openReports ? ' (' + S.openReports + ' offen)' : ''}`, reportsDialog)] : []),
       item('🔄 AD-Abgleich', syncDialog),
       item('💾 Datenhaltung', storageDialog),
@@ -748,7 +757,7 @@ function editPerson(p, kindNew) {
   const dl = h('datalist', { id: 'amt-list' }, [...new Set(S.people.map((x) => x.amt).filter(Boolean))].sort(collator.compare).map((a) => h('option', { value: a })));
   body.append(dl);
   inputs.amt.setAttribute('list', 'amt-list');
-  let note, user, hidden, orgSel;
+  let note, user, hidden, orgSel, chanSel;
   let shareEmp, shareAmts;
   if (kind === 'priv') {
     note = h('textarea', { maxlength: 500, rows: 3 }, p ? p.note || '' : '');
@@ -776,6 +785,8 @@ function editPerson(p, kindNew) {
     updHint();
   } else {
     orgSel = unitSelect(p ? p.orgUnit || 0 : (S.view === 'org' && S.orgCur > 0 ? S.orgCur : 0));
+    chanSel = channelSelect(p ? p.channel || 0 : 0);
+    body.append(h('div', { class: 'full' }, field('Bevorzugter Kontaktweg', chanSel, S.channels.length ? 'Zeigt auf der Visitenkarte „Bitte bevorzugt so kontaktieren“.' : 'Noch keine Kontaktwege angelegt (Verwaltung → Kontaktwege).')));
     body.append(h('div', { class: 'full' }, field('Organisation', orgSel, S.org.units.length ? 'Position im Organigramm. Die Anzeige „Amt“ bleibt davon unabhängig.' : 'Noch keine Einheiten angelegt (Verwaltung → Organisation).')));
     user = h('input', { type: 'text', value: p ? p.username || '' : '', maxlength: 64, autocomplete: 'off', placeholder: 'z. B. mmuster' });
     hidden = h('input', { type: 'checkbox', checked: p && p.hidden ? true : null });
@@ -796,7 +807,7 @@ function editPerson(p, kindNew) {
     const data = {};
     for (const k of Object.keys(inputs)) data[k] = inputs[k].value;
     if (kind === 'priv') { data.note = note.value; data.shares = { employees: [...shareEmp], amts: shareAmts }; }
-    else { data.username = user.value; data.hidden = hidden.checked; data.orgUnit = +orgSel.value; }
+    else { data.username = user.value; data.hidden = hidden.checked; data.orgUnit = +orgSel.value; data.channel = +chanSel.value; }
     try {
       if (kind === 'priv') await api(isNew ? 'POST' : 'PUT', isNew ? '/api/private' : `/api/private/${p.id}`, data);
       else await api(isNew ? 'POST' : 'PUT', isNew ? '/api/employees' : `/api/employees/${p.id}`, data);
@@ -1059,6 +1070,131 @@ function unitSelect(cur, exclude) {
   return sel;
 }
 
+// ---------- Bevorzugter Kontaktweg (eigenständig, Personen gezielt zugewiesen) ----------
+
+function personContact(p) {
+  const ch = p && p.channel ? S.chanById.get(p.channel) : null;
+  return ch ? { contact: ch, channel: ch } : null;
+}
+function contactSummary(c) {
+  return [c.ticketUrl ? (c.ticketLabel || 'Ticketsystem') : '', c.email || '', c.phone ? 'Hotline ' + c.phone : ''].filter(Boolean).join(' · ');
+}
+function contactBox(c) {
+  return h('div', { class: 'contact-pref' },
+    h('div', { class: 'cp-head' }, '💬 Bitte bevorzugt so kontaktieren', c.name ? h('small', { class: 'muted' }, ' – ' + c.name) : null),
+    h('div', { class: 'cp-btns' },
+      c.ticketUrl && /^https?:\/\//i.test(c.ticketUrl) ? h('a', { class: 'btn primary', href: c.ticketUrl, target: '_blank', rel: 'noopener noreferrer' }, '🎫 ', c.ticketLabel || 'Ticket erstellen') : null,
+      c.email ? h('a', { class: 'btn', href: 'mailto:' + c.email }, '✉ ', c.email) : null,
+      c.phone ? h('a', { class: 'btn', href: telHref(c.phone) }, '☎ Hotline ', c.phone) : null),
+    c.note ? h('div', { class: 'cp-note muted' }, c.note) : null);
+}
+
+function channelSelect(cur) {
+  return h('select', null, h('option', { value: 0 }, '— keiner (direkt erreichbar) —'), S.channels.map((c) => h('option', { value: c.id, selected: c.id === cur || null }, c.name + ' – ' + contactSummary(c))));
+}
+
+// ---------- Admin: Kontaktwege ----------
+
+async function channelManager() {
+  await reload();
+  const count = (id) => S.people.filter((p) => p.kind === 'emp' && p.channel === id).length;
+  const rows = S.channels.map((c) => h('div', { class: 'org-trow' },
+    h('b', null, c.name),
+    h('span', { class: 'badge via' }, contactSummary(c)),
+    c.hideDirect ? h('span', { class: 'badge', title: 'Liste: Hotline statt Durchwahl, Karte: Durchwahl eingeklappt' }, 'Durchwahl zurückhaltend') : null,
+    h('span', { class: 'muted' }, `${count(c.id)} Person(en)`),
+    h('span', { class: 'grow' }),
+    h('button', { type: 'button', class: 'icon', title: 'Personen zuweisen', onclick: () => channelMembersDialog(c) }, '👥'),
+    h('button', { type: 'button', class: 'icon', title: 'Bearbeiten', onclick: () => channelDialog(c) }, '✏️'),
+    h('button', { type: 'button', class: 'icon danger', title: 'Löschen', onclick: async () => {
+      if (!(await confirmDialog('Kontaktweg löschen', `„${c.name}“ löschen? Bei ${count(c.id)} Person(en) entfällt der Hinweis.`, 'Löschen', true))) { channelManager(); return; }
+      try { await api('DELETE', `/api/channels/${c.id}`); toast('Gelöscht', 'ok'); } catch (e) { toast(e.message, 'err'); }
+      channelManager();
+    } }, '🗑')));
+  openDialog({
+    title: 'Kontaktwege verwalten', wide: true,
+    body: h('div', { class: 'admin' },
+      h('p', { class: 'hint' }, 'Ein Kontaktweg sagt „Bitte bevorzugt so erreichen“ – z. B. „IT-Support“ mit Ticketsystem, Funktionspostfach und Hotline. Er wird unabhängig von der Organisation angelegt und Personen gezielt zugewiesen (👥 oder im Stammdaten-Dialog).'),
+      h('div', { class: 'toolbar' }, h('button', { type: 'button', class: 'primary', onclick: () => channelDialog(null) }, '＋ Kontaktweg anlegen')),
+      rows.length ? h('div', { class: 'org-tree' }, rows) : h('p', { class: 'muted' }, 'Noch keine Kontaktwege.')),
+    buttons: ['spacer', { label: 'Schließen', cls: 'primary' }],
+  });
+}
+
+function channelDialog(c) {
+  const c0 = c || {};
+  const ci = {
+    name: h('input', { type: 'text', value: c0.name || '', maxlength: 100, placeholder: 'z. B. IT-Support' }),
+    ticketUrl: h('input', { type: 'url', value: c0.ticketUrl || '', maxlength: 500, placeholder: 'https://ticket.firma.local/neu' }),
+    ticketLabel: h('input', { type: 'text', value: c0.ticketLabel || '', maxlength: 40, placeholder: 'Ticket erstellen' }),
+    email: h('input', { type: 'email', value: c0.email || '', maxlength: 254, placeholder: 'it-support@firma.local' }),
+    phone: h('input', { type: 'tel', value: c0.phone || '', maxlength: 64, placeholder: 'z. B. 0123 456-999' }),
+    note: h('input', { type: 'text', value: c0.note || '', maxlength: 200, placeholder: 'z. B. Bitte nicht direkt anrufen – so geht nichts verloren.' }),
+    hideDirect: h('input', { type: 'checkbox', checked: c0.hideDirect || null }),
+  };
+  openDialog({
+    title: c ? `Kontaktweg: ${c.name}` : 'Kontaktweg anlegen', wide: true,
+    body: h('div', { class: 'form-grid' },
+      h('div', { class: 'full' }, field('Name', ci.name, 'Nur für die Verwaltung und als Hinweis auf der Visitenkarte.')),
+      field('Ticketsystem (Adresse)', ci.ticketUrl), field('Beschriftung', ci.ticketLabel), field('E-Mail (Funktionspostfach)', ci.email), field('Hotline', ci.phone),
+      h('div', { class: 'full' }, field('Hinweis', ci.note)),
+      h('label', { class: 'check full' }, ci.hideDirect, ' Direkte Durchwahlen zurückhaltend zeigen (Liste: Hotline statt Durchwahl, Karte: Durchwahl eingeklappt)'),
+      h('p', { class: 'hint full' }, 'Mindestens Ticketsystem, E-Mail oder Hotline angeben.')),
+    buttons: ['spacer', { label: 'Zurück', onClick: () => { channelManager(); return false; } }, { label: 'Speichern', cls: 'primary', onClick: async () => {
+      const body = { name: ci.name.value, ticketUrl: ci.ticketUrl.value, ticketLabel: ci.ticketLabel.value, email: ci.email.value, phone: ci.phone.value, note: ci.note.value, hideDirect: ci.hideDirect.checked };
+      try {
+        if (c) await api('PUT', `/api/channels/${c.id}`, body);
+        else { const r = await api('POST', '/api/channels', body); toast('Angelegt – jetzt Personen zuweisen', 'ok'); await reload(); channelMembersDialog(S.chanById.get(r.id) || { id: r.id, name: body.name }); return false; }
+        toast('Gespeichert', 'ok');
+      } catch (e) { toast(e.message, 'err'); return false; }
+      channelManager();
+      return false;
+    } }],
+  });
+  setTimeout(() => ci.name.focus(), 30);
+}
+
+function channelMembersDialog(c) {
+  const current = new Set(S.people.filter((p) => p.kind === 'emp' && p.channel === c.id).map((p) => p.id));
+  const sel = new Set(current);
+  const info = h('span', { class: 'muted' });
+  const upd = () => {
+    const add = [...sel].filter((id) => !current.has(id)).length, rm = [...current].filter((id) => !sel.has(id)).length;
+    info.textContent = `${sel.size} zugewiesen` + (add || rm ? ` (＋${add} / −${rm})` : '');
+  };
+  const people = S.people.filter((p) => p.kind === 'emp').map((p) => {
+    const x = pickPerson(p);
+    const o = p.channel && p.channel !== c.id ? S.chanById.get(p.channel) : null;
+    if (o) x.amt = (x.amt ? x.amt + ' · ' : '') + 'jetzt: ' + o.name;
+    return x;
+  });
+  const pp = personPicker({ people, selected: sel, onChange: upd, placeholder: 'Personen suchen (Name, Amt) – dann ggf. „alle Treffer auswählen“', selectAll: true, limit: 100 });
+  // Hilfe: alle Personen einer Einheit auf einmal auswählen
+  const unitSel = unitSelect(0);
+  unitSel.options[0].textContent = '— Einheit wählen —';
+  const addUnit = h('button', { type: 'button', onclick: () => {
+    const id = +unitSel.value;
+    if (!id) return;
+    for (const p of unitMembers(id, true)) sel.add(p.id);
+    pp.render(); upd();
+  } }, '＋ alle aus dieser Einheit');
+  upd();
+  openDialog({
+    title: `Personen zuweisen: ${c.name}`, wide: true,
+    body: h('div', { class: 'admin' },
+      h('p', { class: 'hint' }, 'Nur ausgewählte Personen bekommen den Hinweis „Bitte bevorzugt so kontaktieren“. Wer schon einen anderen Kontaktweg hat, wird umgestellt.'),
+      S.org.units.length ? h('div', { class: 'toolbar' }, unitSel, addUnit, h('span', { class: 'muted small' }, 'inkl. Untereinheiten')) : null,
+      info, pp.el),
+    buttons: ['spacer', { label: 'Zurück', onClick: () => { channelManager(); return false; } }, { label: 'Speichern', cls: 'primary', onClick: async () => {
+      const add = [...sel].filter((id) => !current.has(id)), remove = [...current].filter((id) => !sel.has(id));
+      try { const r = await api('POST', `/api/channels/${c.id}/members`, { add, remove }); toast(`＋${r.added} / −${r.removed}`, 'ok'); } catch (e) { toast(e.message, 'err'); return false; }
+      channelManager();
+      return false;
+    } }],
+  });
+  setTimeout(() => pp.focus(), 30);
+}
+
 // ---------- Organigramm (linke Seite) ----------
 
 function orgGo(id) { S.orgCur = id; S.selPeople.clear(); update(); $('#orgview').scrollTop = 0; }
@@ -1077,7 +1213,11 @@ function renderOrg() {
     const row = h('div', { class: 'org-person' + (S.selPeople.has(p.key) ? ' sel' : ''), role: 'option', tabindex: '-1', onclick: (e) => clickPerson(p.key, e) },
       h('img', { src: avatarURL(p, 32), alt: '', width: 32, height: 32 }),
       h('span', { class: 'nm' }, h('span', null, h('b', null, p.lastName), p.firstName ? ', ' + p.firstName : ''), ...personRoles(p).filter((r) => !cur || r.unit === cur.id).map((r) => h('span', { class: 'badge role', title: r.title }, r.lead ? '★ Leitung' : '☆ Stv.')), a ? h('span', { class: 'badge away', title: absenceText(p, a) }, '🏖 bis ' + fmtDay(a.to)) : null),
-      p.phone ? h('a', { href: telHref(p.phone), onclick: (e) => e.stopPropagation() }, p.phone) : h('span', { class: 'muted' }, '–'),
+      (() => {
+        const c = personContact(p);
+        if (c && c.contact.hideDirect) return h('span', { class: 'via', title: 'Bitte bevorzugt: ' + contactSummary(c.contact) }, c.contact.phone ? h('a', { href: telHref(c.contact.phone), onclick: (e) => e.stopPropagation() }, c.contact.phone) : (c.contact.ticketUrl ? '🎫 Ticket' : '✉ Mail'));
+        return p.phone ? h('a', { href: telHref(p.phone), onclick: (e) => e.stopPropagation() }, p.phone) : h('span', { class: 'muted' }, '–');
+      })(),
       h('span', { class: 'muted org-amt' }, p.amt || ''));
     return row;
   };
@@ -1246,6 +1386,14 @@ async function reportsDialog(status = 'open') {
     try { await api('PUT', `/api/admin/reports/${x.id}`, { status: st, note }); toast(REPORT_STATUS[st], 'ok'); } catch (e) { toast(e.message, 'err'); }
     reportsDialog(status);
   };
+  const psCount = r.reports.filter((x) => x.ps).length;
+  const tools = h('div', { class: 'toolbar' },
+    psCount ? h('button', { type: 'button', title: 'Alle offenen AD-Meldungen als PowerShell-Skript (Set-ADUser)', onclick: () => psScriptDialog() }, `⧉ PowerShell-Skript (${psCount})`) : null,
+    h('button', { type: 'button', title: 'Offene Meldungen erledigen, deren Wert schon im Eintrag steht', onclick: async () => {
+      try { const x = await api('POST', '/api/admin/reports/autoclose', {}); toast(`${x.closed} Meldung(en) automatisch erledigt`, 'ok'); } catch (e) { toast(e.message, 'err'); }
+      reportsDialog(status);
+    } }, '✓ Übernommene erledigen'),
+    S.me.features.syncEnabled ? h('button', { type: 'button', onclick: () => syncDialog() }, '🔄 AD-Abgleich …') : null);
   const tabs = h('div', { class: 'seg small' }, Object.entries({ open: 'Offen', done: 'Erledigt', rejected: 'Abgelehnt', all: 'Alle' }).map(([k, l]) => h('button', { type: 'button', class: k === status ? 'active' : '', onclick: () => reportsDialog(k) }, l + (k === 'open' ? ` (${r.open})` : ''))));
   const rows = r.reports.map((x) => {
     const p = x.employeeId ? empByID(x.employeeId) : null;
@@ -1256,7 +1404,9 @@ async function reportsDialog(status = 'open') {
       h('td', null, p ? h('button', { type: 'button', class: 'linkish', onclick: () => { $('#dlg').close(); goPerson(p.key); } }, x.target) : h('span', { class: 'muted', title: 'Eintrag gelöscht' }, x.target)),
       h('td', null, r.fields[x.field] || x.field, adLocked ? h('div', { class: 'badge ad', title: 'Feld kommt aus dem AD – dort korrigieren' }, 'AD') : null),
       h('td', null, p ? currentValue(p, x.field) : ''),
-      h('td', null, x.suggestion ? h('b', null, x.suggestion) : '', x.message ? h('div', { class: 'muted' }, x.message) : ''),
+      h('td', null, x.suggestion ? h('b', null, x.suggestion) : '', x.message ? h('div', { class: 'muted' }, x.message) : '',
+        x.applied ? h('div', null, h('span', { class: 'badge away', title: 'Der Eintrag enthält den gemeldeten Wert bereits' }, '✓ schon übernommen')) : null,
+        x.ps ? h('div', { class: 'ps-line' }, h('code', { title: x.ps }, x.ps), h('button', { type: 'button', class: 'linkish', title: 'PowerShell-Befehl kopieren', onclick: () => copyText(x.ps, 'Befehl kopiert') }, '⧉ PowerShell')) : (x.status === 'open' && x.psWhy && adLocked ? h('div', { class: 'muted small' }, 'Kein AD-Befehl: ' + x.psWhy) : null)),
       h('td', null, x.reporterName || x.reporter),
       h('td', { class: 'rep-act' },
         h('input', { id: `rn-${x.id}`, type: 'text', value: x.note || '', placeholder: 'Antwort/Notiz', maxlength: 500 }),
@@ -1269,11 +1419,11 @@ async function reportsDialog(status = 'open') {
   });
   openDialog({
     title: 'Gemeldete Fehler', wide: true,
-    body: h('div', { class: 'admin' }, h('div', { class: 'toolbar' }, tabs),
+    body: h('div', { class: 'admin' }, h('div', { class: 'toolbar' }, tabs, h('span', { class: 'grow' }), tools),
       rows.length ? h('div', { class: 'table-wrap tall' }, h('table', { class: 'tbl reports' },
         h('thead', null, h('tr', null, ['Datum', 'Eintrag', 'Was', 'Aktuell', 'Vorschlag / Hinweis', 'Von', 'Bearbeitung'].map((x) => h('th', null, x)))), h('tbody', null, rows)))
         : h('p', { class: 'muted' }, status === 'open' ? 'Keine offenen Meldungen. 🎉' : 'Keine Meldungen.'),
-      h('p', { class: 'hint' }, 'Felder mit „AD“ werden im Active Directory gepflegt – dort korrigieren, der nächste Abgleich übernimmt es. Die Notiz sieht die meldende Person unter „Meine Meldungen“.')),
+      h('p', { class: 'hint' }, 'Felder mit „AD“ werden im Active Directory gepflegt. Das Telefonbuch schreibt nicht selbst ins AD, erzeugt aber geprüfte PowerShell-Befehle (Set-ADUser) zum Kopieren. Nach dem nächsten AD-Abgleich werden Meldungen, deren Wert übernommen ist, automatisch erledigt. Die Notiz sieht die meldende Person unter „Meine Meldungen“.')),
     buttons: ['spacer', { label: 'Schließen', cls: 'primary' }],
     onClose: () => reload(),
   });
@@ -1336,7 +1486,8 @@ async function orgManager() {
           orgManager();
         } }, 'Ebenen speichern')),
       h('h4', null, 'Einheiten'),
-      h('div', { class: 'toolbar' }, h('button', { type: 'button', onclick: () => unitDialog(null, 0) }, `＋ ${(S.org.levels[0] || {}).name || 'Einheit'} anlegen`)),
+      h('div', { class: 'toolbar' }, h('button', { type: 'button', onclick: () => unitDialog(null, 0) }, `＋ ${(S.org.levels[0] || {}).name || 'Einheit'} anlegen`),
+        S.org.units.length ? h('button', { type: 'button', class: 'primary', title: 'Personen anhand ihres Amt-Textes den gleichnamigen Einheiten zuordnen', onclick: () => orgSuggestDialog() }, '🪄 Nach Amt zuordnen …') : null),
       tree),
     buttons: ['spacer', { label: 'Schließen', cls: 'primary' }],
   });
@@ -1407,6 +1558,99 @@ function membersDialog(u, fromManager) {
     } }],
   });
   setTimeout(() => pp.focus(), 30);
+}
+
+// ---------- Zwischenablage ----------
+
+async function copyText(text, msg) {
+  try { await navigator.clipboard.writeText(text); toast(msg || 'Kopiert', 'ok'); return; } catch { /* Fallback unten */ }
+  const ta = h('textarea', { class: 'offscreen' }, text);
+  document.body.append(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { /* egal */ }
+  ta.remove();
+  toast(ok ? (msg || 'Kopiert') : 'Kopieren nicht möglich – bitte markieren und Strg+C', ok ? 'ok' : 'err');
+}
+
+async function psScriptDialog() {
+  let text;
+  try {
+    const r = await fetch('/api/admin/reports/powershell', { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('Skript konnte nicht erzeugt werden');
+    text = await r.text();
+  } catch (e) { toast(e.message, 'err'); return; }
+  const ta = h('textarea', { class: 'ps-script', rows: 18, readonly: true, spellcheck: 'false' }, text);
+  const url = URL.createObjectURL(new Blob(['\ufeff' + text], { type: 'text/plain;charset=utf-8' }));
+  openDialog({
+    title: 'PowerShell: Korrekturen ins AD übernehmen', wide: true,
+    body: h('div', { class: 'admin' },
+      h('p', { class: 'hint' }, 'Bitte prüfen. Das Skript startet als Probelauf ($WhatIfPreference = $true). Zum Ausführen die Zeile auf $false setzen. Danach den AD-Abgleich starten – übernommene Meldungen werden automatisch erledigt.'),
+      ta),
+    buttons: [{ label: '⬇ Als .ps1 speichern', onClick: () => { const a = h('a', { href: url, download: 'telefonbuch-korrekturen.ps1' }); document.body.append(a); a.click(); a.remove(); return false; } },
+      'spacer', { label: 'Zurück', onClick: () => { reportsDialog('open'); return false; } }, { label: '⧉ Kopieren', cls: 'primary', onClick: () => { copyText(text, 'Skript kopiert'); return false; } }],
+    onClose: () => URL.revokeObjectURL(url),
+  });
+}
+
+// ---------- Massenzuweisung nach Amt-Text ----------
+
+async function orgSuggestDialog() {
+  let r;
+  try { r = await api('GET', '/api/org/suggest'); } catch (e) { toast(e.message, 'err'); return; }
+  const MATCH = { exakt: ['exakt', 'Amt-Text = Name der Einheit'], kuerzel: ['Kürzel', 'Kürzel am Anfang des Amt-Textes'], aehnlich: ['ähnlich', 'Name der Einheit ist im Amt-Text enthalten – bitte prüfen'] };
+  const rows = r.items.map((x) => ({ ...x, take: x.default, unit: x.proposed || 0 }));
+  const tbody = h('tbody');
+  const count = h('b');
+  const filterSel = h('select', null, h('option', { value: 'all' }, 'alle Vorschläge'), h('option', { value: 'new' }, 'nur bisher nicht zugeordnete'), h('option', { value: 'change' }, 'nur Umzuordnungen'), h('option', { value: 'unsure' }, 'nur unsichere/mehrdeutige'));
+  const visible = (x) => ({ all: true, new: !x.change, change: x.change, unsure: x.match === 'aehnlich' || !x.proposed })[filterSel.value];
+  const render = () => {
+    count.textContent = String(rows.filter((x) => x.take && x.unit).length);
+    tbody.replaceChildren(...rows.filter(visible).map((x) => {
+      const opts = [...new Set([x.proposed, ...(x.candidates || [])].filter(Boolean))];
+      const sel = h('select', { onchange: (e) => { x.unit = +e.target.value; if (x.unit) x.take = true; render(); } },
+        h('option', { value: 0 }, '— bitte wählen —'), opts.map((id) => { const u = S.unitById.get(id); return u ? h('option', { value: id, selected: id === x.unit || null }, unitPath(u).map((p) => p.short || p.name).join(' › ') + (unitPath(u).length > 1 ? ' – ' + u.name : '')) : null; }));
+      const cb = h('input', { type: 'checkbox', checked: x.take && x.unit ? true : null, disabled: x.unit ? null : true, onchange: (e) => { x.take = e.target.checked; render(); } });
+      const m = MATCH[x.match] || ['?', ''];
+      const cur = S.unitById.get(x.current);
+      return h('tr', { class: x.take && x.unit ? 'take' : '' },
+        h('td', null, h('label', { class: 'check' }, cb, x.take && x.unit ? ' ja' : ' nein')),
+        h('td', null, x.name), h('td', null, x.amt),
+        h('td', null, sel),
+        h('td', null, h('span', { class: 'badge ' + (x.match === 'exakt' ? 'away' : x.match === 'kuerzel' ? 'via' : 'role'), title: m[1] }, x.proposed ? m[0] : 'mehrdeutig')),
+        h('td', { class: 'muted' }, cur ? '→ ändert ' + unitLabel(cur) : 'neu'));
+    }));
+  };
+  filterSel.addEventListener('change', render);
+  render();
+  const auto = h('input', { type: 'checkbox', checked: r.autoAssign || null });
+  const setAll = (fn) => { for (const x of rows) if (visible(x) && x.unit) x.take = fn(x); render(); };
+  openDialog({
+    title: 'Organisation: nach Amt zuordnen', wide: true,
+    body: h('div', { class: 'admin' },
+      h('p', { class: 'hint' }, 'Der Amt-Text (z. B. aus dem AD, Feld department) wird mit den Namen und Kürzeln der Einheiten verglichen. Vorausgewählt („ja“) sind eindeutige exakte oder Kürzel-Treffer für bisher nicht Zugeordnete. Wer schon in einer passenden Untereinheit steckt, erscheint nicht.'),
+      rows.length ? h('div', { class: 'toolbar' }, filterSel,
+        h('button', { type: 'button', onclick: () => setAll((x) => x.match !== 'aehnlich') }, 'Sichere auswählen'),
+        h('button', { type: 'button', onclick: () => setAll(() => true) }, 'Alle (sichtbaren) ja'),
+        h('button', { type: 'button', onclick: () => setAll(() => false) }, 'Alle (sichtbaren) nein'),
+        h('span', { class: 'grow' }), h('span', null, 'Übernehmen: ', count)) : null,
+      rows.length ? h('div', { class: 'table-wrap tall' }, h('table', { class: 'tbl suggest' }, h('thead', null, h('tr', null, ['Übernehmen', 'Name', 'Amt (Text)', 'Einheit', 'Treffer', 'Aktuell'].map((t) => h('th', null, t)))), tbody))
+        : h('p', { class: 'muted' }, 'Keine Vorschläge – alle passenden Personen sind bereits zugeordnet. 🎉'),
+      h('label', { class: 'check' }, auto, ' Nach jedem AD-Abgleich automatisch zuordnen (nur eindeutige exakte/Kürzel-Treffer, nur bisher nicht Zugeordnete)')),
+    buttons: ['spacer', { label: 'Zurück', onClick: async () => { await saveAuto(); orgManager(); return false; } }, { label: 'Zuordnung übernehmen', cls: 'primary', onClick: async () => {
+      const assignments = rows.filter((x) => x.take && x.unit).map((x) => ({ id: x.id, unit: x.unit }));
+      try {
+        await saveAuto();
+        if (assignments.length) { const x = await api('POST', '/api/org/assign', { assignments }); toast(`${x.assigned} Person(en) zugeordnet`, 'ok'); }
+      } catch (e) { toast(e.message, 'err'); return false; }
+      orgManager();
+      return false;
+    } }],
+  });
+  async function saveAuto() {
+    if (!!auto.checked === !!r.autoAssign) return;
+    try { await api('PUT', '/api/org/auto-assign', { enabled: auto.checked }); r.autoAssign = auto.checked; toast(auto.checked ? 'Automatische Zuordnung nach dem AD-Abgleich: an' : 'Automatische Zuordnung: aus', 'ok'); } catch (e) { toast(e.message, 'err'); }
+  }
 }
 
 // ---------- Admin: AD-Abgleich ----------
@@ -1526,7 +1770,7 @@ async function storageDialog() {
 async function auditDialog() {
   const q = h('input', { type: 'search', placeholder: 'Suchen (Benutzer, Aktion, Eintrag …)' });
   const tbody = h('tbody');
-  const ACT = { mysql_import: 'Übernahme aus MySQL', login: 'Anmeldung', login_failed: 'Anmeldung fehlgeschlagen', tags_update: 'Schlagworte geändert', avatar_update: 'Avatar geändert', employee_create: 'Eintrag angelegt', employee_update: 'Stammdaten geändert', employee_delete: 'Eintrag gelöscht', tag_create: 'Schlagwort angelegt', tag_update: 'Schlagwort geändert', tag_merge: 'Schlagworte zusammengeführt', tag_delete: 'Schlagwort gelöscht', tag_cleanup: 'Unbenutzte Schlagworte gelöscht', ad_sync: 'AD-Abgleich', category_create: 'Kategorie angelegt', category_update: 'Kategorie geändert', category_delete: 'Kategorie gelöscht', storage_online: 'Datenbank wieder erreichbar', deputies_update: 'Vertretung geändert', absences_update: 'Abwesenheit geändert', report_create: 'Fehler gemeldet', report_done: 'Meldung erledigt', report_rejected: 'Meldung abgelehnt', report_open: 'Meldung wieder geöffnet', org_levels: 'Ebenen geändert', org_unit_create: 'Einheit angelegt', org_unit_update: 'Einheit geändert', org_unit_delete: 'Einheit gelöscht', org_members: 'Einheit: Zuordnung' };
+  const ACT = { mysql_import: 'Übernahme aus MySQL', login: 'Anmeldung', login_failed: 'Anmeldung fehlgeschlagen', tags_update: 'Schlagworte geändert', avatar_update: 'Avatar geändert', employee_create: 'Eintrag angelegt', employee_update: 'Stammdaten geändert', employee_delete: 'Eintrag gelöscht', tag_create: 'Schlagwort angelegt', tag_update: 'Schlagwort geändert', tag_merge: 'Schlagworte zusammengeführt', tag_delete: 'Schlagwort gelöscht', tag_cleanup: 'Unbenutzte Schlagworte gelöscht', ad_sync: 'AD-Abgleich', category_create: 'Kategorie angelegt', category_update: 'Kategorie geändert', category_delete: 'Kategorie gelöscht', storage_online: 'Datenbank wieder erreichbar', deputies_update: 'Vertretung geändert', absences_update: 'Abwesenheit geändert', report_create: 'Fehler gemeldet', report_done: 'Meldung erledigt', report_rejected: 'Meldung abgelehnt', report_open: 'Meldung wieder geöffnet', org_levels: 'Ebenen geändert', org_unit_create: 'Einheit angelegt', org_unit_update: 'Einheit geändert', org_unit_delete: 'Einheit gelöscht', org_members: 'Einheit: Zuordnung', org_assign: 'Organisation zugeordnet', channel_create: 'Kontaktweg angelegt', channel_update: 'Kontaktweg geändert', channel_delete: 'Kontaktweg gelöscht', channel_members: 'Kontaktweg zugewiesen', org_auto_assign: 'Automatische Zuordnung', reports_powershell: 'PowerShell-Skript erzeugt', reports_autoclose: 'Meldungen automatisch erledigt' };
   const load = async () => {
     try {
       const r = await api('GET', '/api/admin/audit?limit=500&q=' + encodeURIComponent(q.value));

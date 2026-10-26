@@ -110,6 +110,7 @@ func main() {
 	app.ctx = ctx
 	if !app.offline.Load() {
 		compactStoredAvatars(ctx, app.st())
+		migrateUnitContacts(ctx, app.st())
 	}
 	go app.storageLoop(ctx)
 	go app.reconnectLoop(ctx)
@@ -206,7 +207,16 @@ func (a *App) routes(dev bool) http.Handler {
 	mux.HandleFunc("POST /api/employees/{id}/reports", a.requireAuth(a.handleCreateReport))
 	mux.HandleFunc("GET /api/reports/mine", a.requireAuth(a.handleMyReports))
 	mux.HandleFunc("GET /api/admin/reports", a.requireAdmin(a.handleListReports))
+	mux.HandleFunc("GET /api/admin/reports/powershell", a.requireAdmin(a.handleReportsPowerShell))
+	mux.HandleFunc("POST /api/admin/reports/autoclose", a.requireAdmin(a.handleReportsAutoClose))
+	mux.HandleFunc("GET /api/org/suggest", a.requireAdmin(a.handleOrgSuggest))
+	mux.HandleFunc("POST /api/org/assign", a.requireAdmin(a.handleOrgAssign))
+	mux.HandleFunc("PUT /api/org/auto-assign", a.requireAdmin(a.handleOrgAutoAssignSetting))
 	mux.HandleFunc("PUT /api/admin/reports/{id}", a.requireAdmin(a.handleUpdateReport))
+	mux.HandleFunc("POST /api/channels", a.requireAdmin(a.handleCreateChannel))
+	mux.HandleFunc("PUT /api/channels/{id}", a.requireAdmin(a.handleUpdateChannel))
+	mux.HandleFunc("DELETE /api/channels/{id}", a.requireAdmin(a.handleDeleteChannel))
+	mux.HandleFunc("POST /api/channels/{id}/members", a.requireAdmin(a.handleChannelMembers))
 	mux.HandleFunc("PUT /api/org/levels", a.requireAdmin(a.handleSetOrgLevels))
 	mux.HandleFunc("POST /api/org/units", a.requireAdmin(a.handleCreateOrgUnit))
 	mux.HandleFunc("PUT /api/org/units/{id}", a.requireAdmin(a.handleUpdateOrgUnit))

@@ -191,3 +191,12 @@ func (r *readOnlyStore) CreateReport(context.Context, Report) (int64, error)   {
 func (r *readOnlyStore) UpdateReport(context.Context, int64, string, string, string) error {
 	return ErrReadOnly
 }
+
+func (r *readOnlyStore) CreateChannel(context.Context, ContactChannel) (int64, error) {
+	return 0, ErrReadOnly
+}
+func (r *readOnlyStore) UpdateChannel(context.Context, ContactChannel) error { return ErrReadOnly }
+func (r *readOnlyStore) DeleteChannel(context.Context, int64) error          { return ErrReadOnly }
+func (r *readOnlyStore) SetChannel(context.Context, []int64, int64) (int, error) {
+	return 0, ErrReadOnly
+}

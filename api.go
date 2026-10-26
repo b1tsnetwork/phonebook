@@ -33,6 +33,7 @@ type Employee struct {
 	Avatar    json.RawMessage `json:"avatar,omitempty"`
 	Tags      []int64         `json:"tags"`
 	OrgUnit   int64           `json:"orgUnit,omitempty"`
+	Channel   int64           `json:"channel,omitempty"`
 	Deputies  []int64         `json:"deputies,omitempty"`
 	Absences  []Absence       `json:"absences,omitempty"`
 }
@@ -244,7 +245,7 @@ func (a *App) handleDirectory(w http.ResponseWriter, r *http.Request) {
 		e := &recs[i]
 		out := Employee{ID: e.ID, Username: e.Username, LastName: e.LastName, FirstName: e.FirstName, Phone: e.Phone, Mobile: e.Mobile,
 			Room: e.Room, Amt: e.Amt, Email: e.Email, Source: e.Source, Active: e.Active, Hidden: e.Hidden, Avatar: e.Avatar, Tags: e.Tags,
-			OrgUnit: e.OrgUnit, Deputies: e.Deputies}
+			OrgUnit: e.OrgUnit, Deputies: e.Deputies, Channel: e.Channel}
 		if showAbs {
 			out.Absences = currentAbsences(e.Absences, today)
 		}
@@ -302,8 +303,13 @@ func (a *App) handleDirectory(w http.ResponseWriter, r *http.Request) {
 		dbFail(w, err)
 		return
 	}
+	channels, err := a.st().ListChannels(ctx)
+	if err != nil {
+		dbFail(w, err)
+		return
+	}
 	out := map[string]any{"employees": emps, "tags": visible, "categories": cats, "private": priv, "shared": shared, "me": me, "site": a.siteJSON(),
-		"org": map[string]any{"levels": a.orgLevels(ctx), "units": units}, "today": today}
+		"org": map[string]any{"levels": a.orgLevels(ctx), "units": units}, "today": today, "channels": channels}
 	if s.IsAdmin && a.cfg.reportsEnabled() {
 		out["openReports"], _ = a.st().CountReports(ctx, "open", "")
 	}
@@ -500,6 +506,7 @@ type employeeInput struct {
 	Username *string `json:"username"`
 	Hidden   bool    `json:"hidden"`
 	OrgUnit  *int64  `json:"orgUnit"` // nil = unverändert, 0 = keine
+	Channel  *int64  `json:"channel"` // Kontaktweg; nil = unverändert, 0 = keiner
 }
 
 // applyOrgUnit setzt die Einheit, wenn angegeben (und vorhanden)
@@ -568,6 +575,10 @@ func (a *App) handleCreateEmployee(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := a.applyChannel(r.Context(), id, in.Channel); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	a.audit(r, s.Username, "employee_create", empLabel(e), "")
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "id": id})
 }
@@ -632,7 +643,12 @@ func (a *App) handleUpdateEmployee(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := a.applyChannel(ctx, id, in.Channel); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	a.audit(r, s.Username, "employee_update", empLabel(cur), diffContact(old, in.contactFields))
+	a.autoCloseReports(ctx, s.Username)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

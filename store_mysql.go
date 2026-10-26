@@ -110,7 +110,7 @@ func (m *mysqlStore) TouchLocalUser(ctx context.Context, user string, t time.Tim
 
 // ---------- Einträge ----------
 
-const empCols = `id, COALESCE(username,''), last_name, first_name, phone, mobile, room, amt, email, source, COALESCE(ad_guid,''), COALESCE(ad_dn,''), active, hidden, COALESCE(avatar,''), created_at, updated_at, last_synced_at, COALESCE(org_unit_id,0), COALESCE(deputies,''), COALESCE(absences,'')`
+const empCols = `id, COALESCE(username,''), last_name, first_name, phone, mobile, room, amt, email, source, COALESCE(ad_guid,''), COALESCE(ad_dn,''), active, hidden, COALESCE(avatar,''), created_at, updated_at, last_synced_at, COALESCE(org_unit_id,0), COALESCE(deputies,''), COALESCE(absences,''), COALESCE(channel_id,0)`
 
 // jsonCol: Liste als JSON-Text (NULL, wenn leer)
 func jsonCol[T any](v []T) any {
@@ -138,7 +138,7 @@ func scanEmp(r scanner) (EmployeeRec, error) {
 	var e EmployeeRec
 	var av, deps, abs string
 	var ls sql.NullTime
-	err := r.Scan(&e.ID, &e.Username, &e.LastName, &e.FirstName, &e.Phone, &e.Mobile, &e.Room, &e.Amt, &e.Email, &e.Source, &e.ADGUID, &e.ADDN, &e.Active, &e.Hidden, &av, &e.CreatedAt, &e.UpdatedAt, &ls, &e.OrgUnit, &deps, &abs)
+	err := r.Scan(&e.ID, &e.Username, &e.LastName, &e.FirstName, &e.Phone, &e.Mobile, &e.Room, &e.Amt, &e.Email, &e.Source, &e.ADGUID, &e.ADDN, &e.Active, &e.Hidden, &av, &e.CreatedAt, &e.UpdatedAt, &ls, &e.OrgUnit, &deps, &abs, &e.Channel)
 	e.Deputies = parseCol[int64](deps)
 	e.Absences = parseCol[Absence](abs)
 	if av != "" {
@@ -222,8 +222,8 @@ func (m *mysqlStore) EmployeeIDByUsername(ctx context.Context, user string) (int
 }
 
 func (m *mysqlStore) CreateEmployee(ctx context.Context, e *EmployeeRec) (int64, error) {
-	res, err := m.db.ExecContext(ctx, `INSERT INTO employees (username, last_name, first_name, phone, mobile, room, amt, email, source, ad_guid, ad_dn, active, hidden, avatar, created_at, updated_at, last_synced_at, org_unit_id, deputies, absences) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		nullStr(e.Username), e.LastName, e.FirstName, e.Phone, e.Mobile, e.Room, e.Amt, e.Email, e.Source, nullStr(e.ADGUID), nullStr(e.ADDN), e.Active, e.Hidden, nullRaw(e.Avatar), e.CreatedAt, e.UpdatedAt, e.LastSyncedAt, nullID(e.OrgUnit), jsonCol(e.Deputies), jsonCol(e.Absences))
+	res, err := m.db.ExecContext(ctx, `INSERT INTO employees (username, last_name, first_name, phone, mobile, room, amt, email, source, ad_guid, ad_dn, active, hidden, avatar, created_at, updated_at, last_synced_at, org_unit_id, deputies, absences, channel_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		nullStr(e.Username), e.LastName, e.FirstName, e.Phone, e.Mobile, e.Room, e.Amt, e.Email, e.Source, nullStr(e.ADGUID), nullStr(e.ADDN), e.Active, e.Hidden, nullRaw(e.Avatar), e.CreatedAt, e.UpdatedAt, e.LastSyncedAt, nullID(e.OrgUnit), jsonCol(e.Deputies), jsonCol(e.Absences), nullID(e.Channel))
 	if isDuplicate(err) {
 		return 0, ErrDuplicate
 	}
@@ -898,6 +898,9 @@ func (m *mysqlStore) Export(ctx context.Context) (*Snapshot, error) {
 	if s.Reports, err = m.ListReports(ctx, "", 0); err != nil {
 		return nil, err
 	}
+	if s.Channels, err = m.ListChannels(ctx); err != nil {
+		return nil, err
+	}
 	rows, err = m.db.QueryContext(ctx, `SELECT k, v FROM settings`)
 	if err != nil {
 		return nil, err
@@ -927,14 +930,20 @@ func (m *mysqlStore) Import(ctx context.Context, s *Snapshot) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, t := range []string{"employee_tags", "employees", "tags", "private_shares", "private_contacts", "tag_categories", "local_users", "audit_log", "sync_runs", "sessions", "org_units", "settings", "reports"} {
+	for _, t := range []string{"employee_tags", "employees", "tags", "private_shares", "private_contacts", "tag_categories", "local_users", "audit_log", "sync_runs", "sessions", "org_units", "settings", "reports", "contact_channels"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
 			return err
 		}
 	}
+	for _, c := range s.Channels {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO contact_channels (id, name, ticket_url, ticket_label, email, phone, note, hide_direct) VALUES (?,?,?,?,?,?,?,?)`,
+			c.ID, c.Name, c.TicketURL, c.TicketLabel, c.Email, c.Phone, c.Note, c.HideDirect); err != nil {
+			return err
+		}
+	}
 	for _, u := range s.OrgUnits {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO org_units (id, parent_id, name, short_name, sort, leaders, deputies) VALUES (?,?,?,?,?,?,?)`,
-			u.ID, nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO org_units (id, parent_id, name, short_name, sort, leaders, deputies, contact) VALUES (?,?,?,?,?,?,?,?)`,
+			u.ID, nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), contactCol(u.Contact)); err != nil {
 			return err
 		}
 	}
@@ -960,8 +969,8 @@ func (m *mysqlStore) Import(ctx context.Context, s *Snapshot) error {
 		}
 	}
 	for _, e := range s.Employees {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO employees (id, username, last_name, first_name, phone, mobile, room, amt, email, source, ad_guid, ad_dn, active, hidden, avatar, created_at, updated_at, last_synced_at, org_unit_id, deputies, absences) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			e.ID, nullStr(e.Username), e.LastName, e.FirstName, e.Phone, e.Mobile, e.Room, e.Amt, e.Email, e.Source, nullStr(e.ADGUID), nullStr(e.ADDN), e.Active, e.Hidden, nullRaw(e.Avatar), e.CreatedAt, e.UpdatedAt, e.LastSyncedAt, nullID(e.OrgUnit), jsonCol(e.Deputies), jsonCol(e.Absences)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO employees (id, username, last_name, first_name, phone, mobile, room, amt, email, source, ad_guid, ad_dn, active, hidden, avatar, created_at, updated_at, last_synced_at, org_unit_id, deputies, absences, channel_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			e.ID, nullStr(e.Username), e.LastName, e.FirstName, e.Phone, e.Mobile, e.Room, e.Amt, e.Email, e.Source, nullStr(e.ADGUID), nullStr(e.ADDN), e.Active, e.Hidden, nullRaw(e.Avatar), e.CreatedAt, e.UpdatedAt, e.LastSyncedAt, nullID(e.OrgUnit), jsonCol(e.Deputies), jsonCol(e.Absences), nullID(e.Channel)); err != nil {
 			return err
 		}
 		for _, t := range e.Tags {
@@ -1100,7 +1109,7 @@ func (m *mysqlStore) SetOrgUnit(ctx context.Context, ids []int64, unit int64) (i
 }
 
 func (m *mysqlStore) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
-	rows, err := m.db.QueryContext(ctx, `SELECT id, COALESCE(parent_id,0), name, short_name, sort, COALESCE(leaders,''), COALESCE(deputies,'') FROM org_units ORDER BY sort, name, id`)
+	rows, err := m.db.QueryContext(ctx, `SELECT id, COALESCE(parent_id,0), name, short_name, sort, COALESCE(leaders,''), COALESCE(deputies,''), COALESCE(contact,'') FROM org_units ORDER BY sort, name, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1108,9 +1117,15 @@ func (m *mysqlStore) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
 	out := []OrgUnit{}
 	for rows.Next() {
 		var u OrgUnit
-		var l, d string
-		if err := rows.Scan(&u.ID, &u.Parent, &u.Name, &u.Short, &u.Sort, &l, &d); err != nil {
+		var l, d, c string
+		if err := rows.Scan(&u.ID, &u.Parent, &u.Name, &u.Short, &u.Sort, &l, &d, &c); err != nil {
 			return nil, err
+		}
+		if c != "" {
+			var cp ContactPref
+			if json.Unmarshal([]byte(c), &cp) == nil {
+				u.Contact = &cp
+			}
 		}
 		u.Leaders, u.Deputies = parseCol[int64](l), parseCol[int64](d)
 		out = append(out, u)
@@ -1119,8 +1134,8 @@ func (m *mysqlStore) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
 }
 
 func (m *mysqlStore) CreateOrgUnit(ctx context.Context, u OrgUnit) (int64, error) {
-	res, err := m.db.ExecContext(ctx, `INSERT INTO org_units (parent_id, name, short_name, sort, leaders, deputies, created_at) VALUES (?,?,?,?,?,?,?)`,
-		nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), time.Now().UTC())
+	res, err := m.db.ExecContext(ctx, `INSERT INTO org_units (parent_id, name, short_name, sort, leaders, deputies, contact, created_at) VALUES (?,?,?,?,?,?,?,?)`,
+		nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), contactCol(u.Contact), time.Now().UTC())
 	if err != nil {
 		return 0, err
 	}
@@ -1128,8 +1143,8 @@ func (m *mysqlStore) CreateOrgUnit(ctx context.Context, u OrgUnit) (int64, error
 }
 
 func (m *mysqlStore) UpdateOrgUnit(ctx context.Context, u OrgUnit) error {
-	res, err := m.db.ExecContext(ctx, `UPDATE org_units SET parent_id = ?, name = ?, short_name = ?, sort = ?, leaders = ?, deputies = ? WHERE id = ?`,
-		nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), u.ID)
+	res, err := m.db.ExecContext(ctx, `UPDATE org_units SET parent_id = ?, name = ?, short_name = ?, sort = ?, leaders = ?, deputies = ?, contact = ? WHERE id = ?`,
+		nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), contactCol(u.Contact), u.ID)
 	if err != nil {
 		return err
 	}
@@ -1242,4 +1257,81 @@ func (m *mysqlStore) CountReports(ctx context.Context, status, reporter string) 
 	var n int
 	err := m.db.QueryRowContext(ctx, q, args...).Scan(&n)
 	return n, err
+}
+
+func contactCol(c *ContactPref) any {
+	if c == nil {
+		return nil
+	}
+	b, _ := json.Marshal(c)
+	return string(b)
+}
+
+// ---------- Kontaktwege ----------
+
+func (m *mysqlStore) ListChannels(ctx context.Context) ([]ContactChannel, error) {
+	rows, err := m.db.QueryContext(ctx, `SELECT id, name, ticket_url, ticket_label, email, phone, note, hide_direct FROM contact_channels ORDER BY name, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ContactChannel{}
+	for rows.Next() {
+		var c ContactChannel
+		if err := rows.Scan(&c.ID, &c.Name, &c.TicketURL, &c.TicketLabel, &c.Email, &c.Phone, &c.Note, &c.HideDirect); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (m *mysqlStore) CreateChannel(ctx context.Context, c ContactChannel) (int64, error) {
+	res, err := m.db.ExecContext(ctx, `INSERT INTO contact_channels (name, ticket_url, ticket_label, email, phone, note, hide_direct, created_at) VALUES (?,?,?,?,?,?,?,?)`,
+		c.Name, c.TicketURL, c.TicketLabel, c.Email, c.Phone, c.Note, c.HideDirect, time.Now().UTC())
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (m *mysqlStore) UpdateChannel(ctx context.Context, c ContactChannel) error {
+	res, err := m.db.ExecContext(ctx, `UPDATE contact_channels SET name = ?, ticket_url = ?, ticket_label = ?, email = ?, phone = ?, note = ?, hide_direct = ? WHERE id = ?`,
+		c.Name, c.TicketURL, c.TicketLabel, c.Email, c.Phone, c.Note, c.HideDirect, c.ID)
+	if err != nil {
+		return err
+	}
+	return m.mustExist(ctx, res, `SELECT 1 FROM contact_channels WHERE id = ?`, c.ID)
+}
+
+func (m *mysqlStore) DeleteChannel(ctx context.Context, id int64) error {
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE employees SET channel_id = NULL WHERE channel_id = ?`, id); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM contact_channels WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
+}
+
+func (m *mysqlStore) SetChannel(ctx context.Context, ids []int64, channel int64) (int, error) {
+	n := 0
+	for _, id := range ids {
+		res, err := m.db.ExecContext(ctx, `UPDATE employees SET channel_id = ? WHERE id = ?`, nullID(channel), id)
+		if err != nil {
+			return n, err
+		}
+		k, _ := res.RowsAffected()
+		n += int(k)
+	}
+	return n, nil
 }

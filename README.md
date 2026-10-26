@@ -44,7 +44,16 @@ Allgemein sichtbare Einträge können nur Administratoren anlegen.
 - Administratoren legen unter *Verwaltung → 🏢 Organisation verwalten* die **Ebenen** fest (Standard: Dezernat › Amt › Sachgebiet › Team, bis zu 6) und darunter die **Einheiten** als Baum (Name, Kürzel, Sortierung).
 - Personen werden einer Einheit **zugeordnet**, im Stammdaten-Dialog oder gesammelt über *👥 Zuordnung*. Dort sucht man z. B. nach dem Amt-Text und wählt dann „alle Treffer“. Das Feld **„Amt“ bleibt Freitext** und wird wie bisher angezeigt. Die Ebenen wirken nur in der Organisationsansicht.
 - **Leitung und Stellvertretung** ergeben sich aus **Zuordnung + Schlagwort**: Je Ebene gibt es ein Leitungs- und ein Stellvertretungs-Schlagwort, z. B. Ebene „Amt“: *Amtsleitung* / *Stv. Amtsleitung*. Wer dem Hauptamt zugeordnet ist und *Amtsleitung* trägt, ist Leitung des Hauptamts. Diese Schlagworte **vergeben nur Administratoren**. Mitarbeitende sehen sie im eigenen Schlagwort-Editor gesperrt (🔒) und können sie weder setzen noch entfernen; das prüft der Server. Zusätzlich lassen sich Personen je Einheit fest als Leitung/Stellvertretung eintragen, z. B. ohne Zuordnung.
+- **Massenzuweisung nach Amt:** *Organisation verwalten → 🪄 Nach Amt zuordnen* vergleicht den Amt-Text (aus dem AD: `department`) mit Name und Kürzel der Einheiten. Erkannt werden exakte Treffer („10 – Hauptamt“, „Hauptamt“, „10 - Hauptamt“, Groß/klein egal), das Kürzel am Anfang („10.1 Personalwesen“ → Einheit 10.1) und ähnliche Treffer („Amt für Straßenbau“ → „Straßenbau“). Die Vorschau zeigt je Person „übernehmen: ja/nein“ mit Treffer-Art. Vorausgewählt sind nur eindeutige exakte bzw. Kürzel-Treffer für bisher nicht Zugeordnete. Unsichere, mehrdeutige Treffer und Umzuordnungen wählt man bewusst aus, Filter helfen dabei. Wer schon in einer passenden Untereinheit steckt, erscheint nicht.
+- Optional **„Nach jedem AD-Abgleich automatisch zuordnen“**: Neue Personen aus dem AD landen dann ohne Handarbeit in ihrer Einheit, aber nur bei eindeutigen exakten bzw. Kürzel-Treffern und nur, wenn sie noch nicht zugeordnet sind.
 - In der Ansicht klickt man sich durch die Ebenen (Brotkrumen oben). Jede Einheit zeigt Leitung, Stellvertretung, Untereinheiten mit Personenzahl und die zugeordneten Personen, wahlweise inkl. Untereinheiten. Die Suchfelder und Schlagwort-Filter wirken auch hier, z. B. „Ersthelfer im Hauptamt“.
+
+**Bevorzugter Kontaktweg** (z. B. „IT-Support“)
+- Kontaktwege werden **eigenständig** angelegt: *Verwaltung → 💬 Kontaktwege verwalten*. Jeder hat einen Namen, dazu **Ticketsystem** (Link, eigene Beschriftung), **E-Mail** (Funktionspostfach) und/oder **Hotline** sowie einen kurzen Hinweis.
+- Sie werden **Personen gezielt zugewiesen**, unabhängig von der Organisation. Das geht über *👥 Personen zuweisen* (Suche nach Name/Amt, „alle Treffer auswählen“ oder „＋ alle aus dieser Einheit“ als Auswahlhilfe; gespeichert wird nur, was ausgewählt ist) oder im Stammdaten-Dialog. Jede Person hat höchstens einen Kontaktweg.
+- Auf der Visitenkarte steht oben „💬 Bitte bevorzugt so kontaktieren – IT-Support“ mit Knöpfen *🎫 Ticket erstellen*, *✉ Mail*, *☎ Hotline*. In der Liste markiert ein kleines 🎫 bzw. ✉ die betroffenen Personen.
+- Optional **„Direkte Durchwahlen zurückhaltend zeigen“**: In der Liste steht dann die Hotline statt der Durchwahl, auf der Karte ist die Durchwahl eingeklappt („nur wenn nötig“). Die Suche nach der Durchwahl funktioniert weiterhin.
+- Kontaktwege aus der Vorversion, die noch an Organisationseinheiten hingen, werden beim Start einmalig in eigenständige Kontaktwege umgewandelt und den bisher betroffenen Personen zugewiesen.
 
 **Vertretung & Abwesenheit**
 - Jede Person legt unter *Menü → 👥 Meine Vertretung* eine oder mehrere Vertretungen fest, Admins für alle Einträge, also auch für Einrichtungen. Auf der Visitenkarte steht „Vertretung: …“, ein Klick springt direkt zur Person. Umgekehrt zeigt „↩ Vertritt“, für wen jemand einspringt.
@@ -54,6 +63,8 @@ Allgemein sichtbare Einträge können nur Administratoren anlegen.
 - Auf jeder Visitenkarte gibt es **🚩 Fehler melden** (angemeldet): Was stimmt nicht (Telefon, Raum, Amt, Organisation, Vertretung …), der richtige Wert und ein Hinweis. Der aktuelle Wert wird angezeigt, AD-gepflegte Felder sind gekennzeichnet.
 - Administratoren sehen unter *Verwaltung → 🚩 Meldungen (n offen)* eine Übersicht: aktueller Wert neben dem Vorschlag, Sprung zum Eintrag bzw. Stammdaten-Dialog, **erledigt / abgelehnt / wieder öffnen** mit Antwort-Notiz. Bei AD-Feldern weist ein „AD“ darauf hin, dass im Active Directory korrigiert werden muss.
 - Die meldende Person sieht Stand und Antwort unter *Menü → 🚩 Meine Meldungen*. Schutz vor Spam: höchstens `features.maxOpenReportsPerUser` (Standard 20) offene Meldungen je Person. Abschalten mit `"reports": false`.
+- **Übernahme ins AD (teilautomatisiert):** Das Telefonbuch schreibt bewusst **nicht** selbst ins AD; das Dienstkonto bleibt nur lesend. Für Meldungen zu AD-Einträgen erzeugt es aber fertige, geprüfte **PowerShell-Befehle**, z. B. `Set-ADUser -Identity '<objectGUID>' -Server 'dc01…' -Replace @{'telephoneNumber'='0123 456-999'}`. Die Attributnamen kommen aus `ldap.attributes`, Werte werden sicher in Anführungszeichen gesetzt, und Vorschläge, die nicht zum Feld passen, werden nicht übernommen. Pro Meldung gibt es „⧉ PowerShell“ zum Kopieren, für alle offenen zusammen ein **Skript** (kopieren oder als `.ps1` speichern). Es startet als Probelauf (`$WhatIfPreference = $true`). „-“ als Vorschlag leert ein Feld, Namen bitte als „Nachname, Vorname“ melden.
+- **Automatisch erledigt:** Nach jedem AD-Abgleich und nach dem Speichern von Stammdaten werden offene Meldungen, deren Vorschlag jetzt im Eintrag steht, automatisch als erledigt markiert, mit Hinweis für die meldende Person. Von Hand geht das mit „✓ Übernommene erledigen“.
 
 **Avatar-Editor** (Menü → *Mein Avatar*, oder Klick auf den eigenen Avatar)
 - Der Kopf hat **16×16 Pixel je Seite** (Version 2, vorher 8×8), dazu eine Überzug-Ebene und Aufbauten wie Hutkrempe, Dutt, Zöpfe, Ohren und Kopfhörer. Er wird in 3D gezeichnet und lässt sich mit der Maus drehen. Alte Avatare werden automatisch übernommen, gemalte Pixel dabei auf 16×16 vergrößert.
@@ -307,6 +318,9 @@ ldap.go        LDAPS: Bind, Benutzersuche, Gruppenprüfung, seitenweise Suche
 adsync.go      AD-Abgleich
 api.go         REST-API: Verzeichnis, Schlagworte, Stammdaten, private Kontakte, Protokoll
 features.go    Vertretungen, Abwesenheiten, Organigramm (Ebenen/Einheiten), Fehlermeldungen
+channels.go    Kontaktwege (Ticketsystem/Postfach/Hotline), gezielte Zuweisung
+adtools.go     Meldungen → PowerShell (Set-ADUser), automatisches Erledigen
+orgmatch.go    Massenzuweisung: Amt-Text → Organisationseinheit
 avatar.go      Prüfung der Avatar-Daten
 seed.go        Demo-Daten
 client.go      Download des Windows-Clients (ZIP mit eingetragener Adresse)
@@ -331,7 +345,9 @@ web/           Frontend (index.html, css/app.css, js/*.js)
 | `POST /api/categories`, `PUT /api/categories/{key}`, `POST /api/categories/{key}/delete` (`{moveTo}`) | Admin |
 | `PUT /api/employees/{id}/deputies`, `PUT /api/employees/{id}/absences` | eigener Eintrag oder Admin |
 | `POST /api/employees/{id}/reports`, `GET /api/reports/mine` | angemeldet |
-| `GET /api/admin/reports`, `PUT /api/admin/reports/{id}` | Admin |
+| `GET /api/admin/reports`, `PUT /api/admin/reports/{id}`, `GET /api/admin/reports/powershell`, `POST /api/admin/reports/autoclose` | Admin |
+| `GET /api/org/suggest`, `POST /api/org/assign`, `PUT /api/org/auto-assign` | Admin |
+| `POST /api/channels`, `PUT/DELETE /api/channels/{id}`, `POST /api/channels/{id}/members` | Admin |
 | `PUT /api/org/levels`, `POST/PUT/DELETE /api/org/units[/{id}]`, `POST /api/org/units/{id}/members` | Admin |
 | `GET/POST /api/tags`, `PUT/DELETE /api/tags/{id}`, `POST /api/tags/{id}/merge`, `POST /api/tags/cleanup` | Admin |
 | `GET/POST /api/admin/sync`, `POST /api/admin/ldap-test`, `GET /api/admin/audit` | Admin |

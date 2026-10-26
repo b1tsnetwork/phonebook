@@ -88,6 +88,13 @@ type Store interface {
 	UpdateReport(ctx context.Context, id int64, status, by, note string) error   // ErrNotFound
 	CountReports(ctx context.Context, status, reporter string) (int, error)      // reporter "" = alle
 
+	// Kontaktwege (Ticketsystem/Postfach/Hotline), Personen gezielt zugewiesen
+	ListChannels(ctx context.Context) ([]ContactChannel, error)
+	CreateChannel(ctx context.Context, c ContactChannel) (int64, error)
+	UpdateChannel(ctx context.Context, c ContactChannel) error // ErrNotFound
+	DeleteChannel(ctx context.Context, id int64) error         // Zuweisungen werden entfernt
+	SetChannel(ctx context.Context, ids []int64, channel int64) (int, error)
+
 	// Protokoll & AD-Abgleich
 	AddAudit(ctx context.Context, e AuditEntry) error
 	ListAudit(ctx context.Context, q string, limit int) ([]AuditEntry, error)
@@ -162,6 +169,14 @@ type EmployeeRec struct {
 	OrgUnit      int64           `json:"orgUnit,omitempty"`  // Einheit im Organigramm (0 = keine)
 	Deputies     []int64         `json:"deputies,omitempty"` // Vertretungen (Einträge, Reihenfolge zählt)
 	Absences     []Absence       `json:"absences,omitempty"` // geplante/aktuelle Abwesenheiten
+	Channel      int64           `json:"channel,omitempty"`  // bevorzugter Kontaktweg (0 = keiner)
+}
+
+// ContactChannel: eigenständiger Kontaktweg, z. B. „IT-Support“ – wird Personen gezielt zugewiesen
+type ContactChannel struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	ContactPref
 }
 
 // Absence: Abwesenheit (bewusst ohne Grund – Datensparsamkeit). Datumsangaben JJJJ-MM-TT, inklusive.
@@ -180,6 +195,27 @@ type OrgUnit struct {
 	Sort     int     `json:"sort"`
 	Leaders  []int64 `json:"leaders,omitempty"`
 	Deputies []int64 `json:"deputies,omitempty"`
+	// Bevorzugter Kontaktweg – gilt für die Einheit, ihre Untereinheiten und alle zugeordneten Personen
+	Contact *ContactPref `json:"contact,omitempty"`
+}
+
+// ContactPref: „Bitte bevorzugt über …“ (Ticketsystem, Funktionspostfach, Hotline)
+type ContactPref struct {
+	TicketURL   string `json:"ticketUrl,omitempty"`
+	TicketLabel string `json:"ticketLabel,omitempty"`
+	Email       string `json:"email,omitempty"`
+	Phone       string `json:"phone,omitempty"`
+	Note        string `json:"note,omitempty"`
+	// Direkte Durchwahlen zurückhaltend zeigen (Liste: Hotline statt Durchwahl, Karte: Durchwahl eingeklappt)
+	HideDirect bool `json:"hideDirect,omitempty"`
+}
+
+func (c *ContactPref) clone() *ContactPref {
+	if c == nil {
+		return nil
+	}
+	x := *c
+	return &x
 }
 
 // Report: Meldung fehlerhafter Daten
@@ -326,6 +362,7 @@ type Snapshot struct {
 	OrgUnits   []OrgUnit         `json:"orgUnits,omitempty"`
 	Settings   map[string]string `json:"settings,omitempty"`
 	Reports    []Report          `json:"reports,omitempty"`
+	Channels   []ContactChannel  `json:"contactChannels,omitempty"`
 }
 
 const snapshotFormat = "telefonbuch"
@@ -430,10 +467,20 @@ func (s *Snapshot) validate() error {
 			seen[p] = true
 		}
 	}
+	chans := map[int64]bool{}
+	for _, c := range s.Channels {
+		if c.ID <= 0 || chans[c.ID] {
+			return fmt.Errorf("Kontaktweg %d ungültig/doppelt", c.ID)
+		}
+		chans[c.ID] = true
+	}
 	for i := range s.Employees {
 		e := &s.Employees[i]
 		if e.OrgUnit != 0 && units[e.OrgUnit] == nil {
 			e.OrgUnit = 0
+		}
+		if e.Channel != 0 && !chans[e.Channel] {
+			e.Channel = 0
 		}
 		e.Deputies = keepEmp(e.Deputies)
 		for j := range e.Absences {

@@ -15,3 +15,36 @@ func TestUnitDepthsAndAbsences(t *testing.T) {
 		t.Fatal("ungültiges Datum akzeptiert")
 	}
 }
+
+func TestMigrateUnitContacts(t *testing.T) {
+	ctx := t.Context()
+	st, err := newJSONStore(t.TempDir()+"/tb.json", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, _ := st.CreateOrgUnit(ctx, OrgUnit{Name: "IT", Short: "12", Contact: &ContactPref{TicketURL: "https://t.example/", HideDirect: true}})
+	sg, _ := st.CreateOrgUnit(ctx, OrgUnit{Parent: it, Name: "Support"})
+	other, _ := st.CreateOrgUnit(ctx, OrgUnit{Name: "Kämmerei"})
+	e1, _ := st.CreateEmployee(ctx, &EmployeeRec{LastName: "A", Active: true, OrgUnit: sg})
+	e2, _ := st.CreateEmployee(ctx, &EmployeeRec{LastName: "B", Active: true, OrgUnit: other})
+	migrateUnitContacts(ctx, st)
+	ch, _ := st.ListChannels(ctx)
+	if len(ch) != 1 || ch[0].Name != "12 – IT" || !ch[0].HideDirect {
+		t.Fatalf("Kontaktwege: %+v", ch)
+	}
+	a, _ := st.GetEmployee(ctx, e1)
+	b, _ := st.GetEmployee(ctx, e2)
+	if a.Channel != ch[0].ID || b.Channel != 0 {
+		t.Fatalf("Zuweisung: %d %d", a.Channel, b.Channel)
+	}
+	us, _ := st.ListOrgUnits(ctx)
+	for _, u := range us {
+		if u.Contact != nil {
+			t.Fatal("Einheit hat noch Kontaktweg")
+		}
+	}
+	migrateUnitContacts(ctx, st) // zweiter Lauf: nichts mehr zu tun
+	if ch, _ := st.ListChannels(ctx); len(ch) != 1 {
+		t.Fatal("doppelt übernommen")
+	}
+}

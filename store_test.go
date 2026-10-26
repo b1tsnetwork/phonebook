@@ -164,6 +164,44 @@ func exerciseStore(t *testing.T, st Store) {
 	}
 	dez, _ := st.CreateOrgUnit(ctx, OrgUnit{Name: "Dezernat I", Sort: 1})
 	amt, _ := st.CreateOrgUnit(ctx, OrgUnit{Parent: dez, Name: "Hauptamt", Short: "10", Leaders: []int64{id}, Deputies: []int64{vid}})
+	if err := st.UpdateOrgUnit(ctx, OrgUnit{ID: amt, Parent: dez, Name: "Hauptamt", Short: "10", Leaders: []int64{id}, Deputies: []int64{vid}, Contact: &ContactPref{TicketURL: "https://t.example/", Phone: "100", HideDirect: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if us, _ := st.ListOrgUnits(ctx); len(us) != 2 || func() *ContactPref {
+		for _, u := range us {
+			if u.ID == amt {
+				return u.Contact
+			}
+		}
+		return nil
+	}() == nil {
+		t.Fatalf("Kontaktweg nicht gespeichert: %+v", us)
+	}
+	chID, err := st.CreateChannel(ctx, ContactChannel{Name: "IT-Support", ContactPref: ContactPref{TicketURL: "https://t.example/", Phone: "100", HideDirect: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := st.SetChannel(ctx, []int64{id}, chID); err != nil || n != 1 {
+		t.Fatalf("SetChannel: %d %v", n, err)
+	}
+	if err := st.UpdateChannel(ctx, ContactChannel{ID: chID, Name: "IT-Service", ContactPref: ContactPref{Email: "it@x.example"}}); err != nil {
+		t.Fatal(err)
+	}
+	if cl, _ := st.ListChannels(ctx); len(cl) != 1 || cl[0].Name != "IT-Service" || cl[0].Email != "it@x.example" || cl[0].HideDirect {
+		t.Fatalf("Kontaktwege: %+v", cl)
+	}
+	if got, _ := st.GetEmployee(ctx, id); got.Channel != chID {
+		t.Fatalf("Kontaktweg nicht zugewiesen: %d", got.Channel)
+	}
+	tmpCh, _ := st.CreateChannel(ctx, ContactChannel{Name: "Weg", ContactPref: ContactPref{Phone: "1"}})
+	_, _ = st.SetChannel(ctx, []int64{id}, tmpCh)
+	if err := st.DeleteChannel(ctx, tmpCh); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.GetEmployee(ctx, id); got.Channel != 0 {
+		t.Fatal("Zuweisung nach Löschen des Kontaktwegs nicht entfernt")
+	}
+	_, _ = st.SetChannel(ctx, []int64{id}, chID)
 	if n, err := st.SetOrgUnit(ctx, []int64{id, vid}, amt); err != nil || n != 2 {
 		t.Fatalf("SetOrgUnit: %d %v", n, err)
 	}
@@ -272,6 +310,9 @@ func exerciseStore(t *testing.T, st Store) {
 	}
 	if err := snap.validate(); err != nil {
 		t.Fatal(err)
+	}
+	if len(snap.Channels) != 1 || snap.Employees[0].Channel == 0 {
+		t.Fatalf("Export Kontaktwege: %+v", snap.Channels)
 	}
 	if len(snap.OrgUnits) != 1 || len(snap.Reports) != 1 || snap.Settings[settingOrgLevels] == "" {
 		t.Fatalf("Export Organisation/Meldungen: %+v %+v %+v", snap.OrgUnits, snap.Reports, snap.Settings)

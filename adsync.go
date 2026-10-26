@@ -69,6 +69,13 @@ func (a *App) RunSync(ctx context.Context, trigger string) (*SyncResult, error) 
 		res.Message = err.Error()
 	} else {
 		res.Status = "ok"
+		// Folgearbeiten: übernommene Meldungen erledigen, neue Einträge der Organisation zuordnen
+		if n := a.autoCloseReports(ctx, "ad-sync"); n > 0 {
+			res.Message = strings.TrimSpace(res.Message + fmt.Sprintf(" %d Meldung(en) erledigt.", n))
+		}
+		if n := a.autoAssignOrg(ctx, "ad-sync"); n > 0 {
+			res.Message = strings.TrimSpace(res.Message + fmt.Sprintf(" %d Person(en) der Organisation zugeordnet.", n))
+		}
 	}
 	_ = a.st().FinishSyncRun(context.Background(), res)
 	a.audit(nil, trigger, "ad_sync", res.Status, fmt.Sprintf("gelesen %d, neu %d, geändert %d, deaktiviert %d, reaktiviert %d %s", res.Seen, res.Created, res.Updated, res.Deactivated, res.Reactivated, res.Message))

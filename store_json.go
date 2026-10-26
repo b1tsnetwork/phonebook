@@ -36,6 +36,8 @@ type jsonStore struct {
 	reports    []Report // älteste zuerst
 	nextUnit   int64
 	nextReport int64
+	channels   map[int64]*ContactChannel
+	nextChan   int64
 	users      map[string]*LocalUser
 	audit      []AuditEntry // älteste zuerst
 	syncRuns   []SyncResult // älteste zuerst
@@ -213,6 +215,12 @@ func (s *jsonStore) apply(snap *Snapshot) {
 	}
 	s.units, s.settings, s.reports = map[int64]*OrgUnit{}, map[string]string{}, nil
 	s.nextUnit, s.nextReport = 1, 1
+	s.channels, s.nextChan = map[int64]*ContactChannel{}, 1
+	for i := range snap.Channels {
+		c := snap.Channels[i]
+		s.channels[c.ID] = &c
+		s.nextChan = max(s.nextChan, c.ID+1)
+	}
 	for i := range snap.OrgUnits {
 		u := copyUnit(&snap.OrgUnits[i])
 		s.units[u.ID] = &u
@@ -267,6 +275,10 @@ func (s *jsonStore) snapshot(withAudit bool) *Snapshot {
 		}
 	}
 	snap.Reports = append([]Report(nil), s.reports...)
+	for _, c := range s.channels {
+		snap.Channels = append(snap.Channels, *c)
+	}
+	sort.Slice(snap.Channels, func(i, j int) bool { return snap.Channels[i].ID < snap.Channels[j].ID })
 	sort.Slice(snap.Employees, func(i, j int) bool { return snap.Employees[i].ID < snap.Employees[j].ID })
 	for _, t := range s.tags {
 		snap.Tags = append(snap.Tags, *t)
@@ -524,6 +536,7 @@ func copyAbsences(l []Absence) []Absence {
 func copyUnit(u *OrgUnit) OrgUnit {
 	c := *u
 	c.Leaders, c.Deputies = copyIDs(u.Leaders), copyIDs(u.Deputies)
+	c.Contact = u.Contact.clone()
 	return c
 }
 
@@ -1350,4 +1363,72 @@ func (s *jsonStore) CountReports(ctx context.Context, status, reporter string) (
 		}
 	}
 	return n, nil
+}
+
+// ---------- Kontaktwege ----------
+
+func (s *jsonStore) ListChannels(ctx context.Context) ([]ContactChannel, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ContactChannel, 0, len(s.channels))
+	for _, c := range s.channels {
+		out = append(out, *c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (s *jsonStore) CreateChannel(ctx context.Context, c ContactChannel) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c.ID = s.nextChan
+	s.nextChan++
+	s.channels[c.ID] = &c
+	return c.ID, s.commit()
+}
+
+func (s *jsonStore) UpdateChannel(ctx context.Context, c ContactChannel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.channels[c.ID] == nil {
+		return ErrNotFound
+	}
+	s.channels[c.ID] = &c
+	return s.commit()
+}
+
+func (s *jsonStore) DeleteChannel(ctx context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.channels[id] == nil {
+		return ErrNotFound
+	}
+	delete(s.channels, id)
+	for _, e := range s.emp {
+		if e.Channel == id {
+			e.Channel = 0
+		}
+	}
+	return s.commit()
+}
+
+func (s *jsonStore) SetChannel(ctx context.Context, ids []int64, channel int64) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, id := range ids {
+		if e := s.emp[id]; e != nil {
+			e.Channel = channel
+			n++
+		}
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	return n, s.commit()
 }

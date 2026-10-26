@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/mail"
 	"regexp"
 	"sort"
 	"strings"
@@ -419,6 +420,43 @@ type orgUnitInput struct {
 	Deputies []int64 `json:"deputies"`
 }
 
+var reTicketURL = regexp.MustCompile(`^https?://[^\s"'<>]+$`)
+
+// cleanContact prüft den bevorzugten Kontaktweg; leer → nil
+func cleanContact(c *ContactPref) (*ContactPref, error) {
+	if c == nil {
+		return nil, nil
+	}
+	var ok bool
+	for _, f := range []struct {
+		p    *string
+		max  int
+		name string
+	}{{&c.TicketURL, 500, "Ticket-Adresse"}, {&c.TicketLabel, 40, "Ticket-Beschriftung"}, {&c.Email, 254, "E-Mail"}, {&c.Phone, 64, "Hotline"}, {&c.Note, 200, "Hinweis"}} {
+		if *f.p, ok = cleanText(*f.p, f.max); !ok || strings.ContainsAny(*f.p, "<>") {
+			return nil, fmt.Errorf("%s ungültig (max. %d Zeichen)", f.name, f.max)
+		}
+	}
+	if c.TicketURL != "" && !reTicketURL.MatchString(c.TicketURL) {
+		return nil, errors.New("Ticket-Adresse muss mit https:// (oder http://) beginnen")
+	}
+	if c.Email != "" {
+		if _, err := mail.ParseAddress(c.Email); err != nil || strings.ContainsAny(c.Email, " ") {
+			return nil, errors.New("E-Mail-Adresse des Kontaktwegs ist ungültig")
+		}
+	}
+	if !rePhone.MatchString(c.Phone) {
+		return nil, errors.New("Hotline: nur Ziffern, Leerzeichen und + ( ) - / .")
+	}
+	if c.TicketURL == "" && c.Email == "" && c.Phone == "" {
+		if c.Note != "" {
+			return nil, errors.New("Bitte mindestens Ticketsystem, E-Mail oder Hotline angeben")
+		}
+		return nil, nil
+	}
+	return c, nil
+}
+
 // checkUnit prüft Name, Eltern (existiert, kein Zyklus) und die Tiefe gegen die Ebenen.
 func (a *App) checkUnit(ctx context.Context, id int64, in *orgUnitInput) (OrgUnit, error) {
 	var ok bool
@@ -483,6 +521,7 @@ func (a *App) checkUnit(ctx context.Context, id int64, in *orgUnitInput) (OrgUni
 	if err != nil {
 		return OrgUnit{}, err
 	}
+	// Kontaktwege hängen nicht mehr an Einheiten (eigene Objekte, siehe channels.go)
 	return OrgUnit{ID: id, Parent: in.Parent, Name: in.Name, Short: in.Short, Sort: in.Sort, Leaders: leaders, Deputies: deps}, nil
 }
 
@@ -681,13 +720,32 @@ func (a *App) handleListReports(w http.ResponseWriter, r *http.Request) {
 	default:
 		status = "open"
 	}
-	list, err := a.st().ListReports(r.Context(), status, 500)
+	ctx := r.Context()
+	list, err := a.st().ListReports(ctx, status, 500)
 	if err != nil {
 		dbFail(w, err)
 		return
 	}
-	open, _ := a.st().CountReports(r.Context(), "open", "")
-	writeJSON(w, http.StatusOK, map[string]any{"reports": list, "open": open, "fields": reportFields})
+	type reportOut struct {
+		Report
+		PS      string `json:"ps,omitempty"`      // PowerShell-Befehl fürs AD
+		PSWhy   string `json:"psWhy,omitempty"`   // warum kein Befehl möglich ist
+		Applied bool   `json:"applied,omitempty"` // Wert steht schon im Eintrag
+	}
+	out := make([]reportOut, 0, len(list))
+	for _, rep := range list {
+		var e *EmployeeRec
+		if rep.EmployeeID != 0 {
+			e, _ = a.st().GetEmployee(ctx, rep.EmployeeID)
+		}
+		o := reportOut{Report: rep, Applied: rep.Status == "open" && reportApplied(rep, e)}
+		if rep.Status == "open" {
+			o.PS, o.PSWhy = a.psCommand(rep, e)
+		}
+		out = append(out, o)
+	}
+	open, _ := a.st().CountReports(ctx, "open", "")
+	writeJSON(w, http.StatusOK, map[string]any{"reports": out, "open": open, "fields": reportFields})
 }
 
 func (a *App) handleUpdateReport(w http.ResponseWriter, r *http.Request) {
