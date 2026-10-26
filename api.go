@@ -311,8 +311,18 @@ func (a *App) handleDirectory(w http.ResponseWriter, r *http.Request) {
 		dbFail(w, err)
 		return
 	}
+	tasks, err := a.st().ListTasks(ctx)
+	if err != nil {
+		dbFail(w, err)
+		return
+	}
+	known := make(map[int64]bool, len(emps))
+	for _, e := range emps {
+		known[e.ID] = true
+	}
 	out := map[string]any{"employees": emps, "tags": visible, "categories": cats, "private": priv, "shared": shared, "me": me, "site": a.siteJSON(),
-		"org": map[string]any{"levels": a.orgLevels(ctx), "units": units}, "today": today, "channels": channels}
+		"org": map[string]any{"levels": a.orgLevels(ctx), "units": units}, "today": today, "channels": channels,
+		"tasks": tasksForDirectory(tasks, known, units)}
 	if s.IsAdmin && a.cfg.reportsEnabled() {
 		out["openReports"], _ = a.st().CountReports(ctx, "open", "")
 	}

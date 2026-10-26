@@ -5,6 +5,7 @@ import { openAvatarEditor } from './editor.js';
 import * as A from './avatar.js';
 import { personPicker, amtPicker } from './picker.js';
 import * as F from './fun.js';
+import * as T from './tasks.js';
 
 // Kategorien kommen vom Server (administrativ pflegbar)
 const catName = (k) => S.catByKey.get(k)?.name || k;
@@ -72,6 +73,21 @@ function applySearch(q) {
   try { window.focus(); } catch { /* egal */ }
 }
 
+// App-Fenster (Windows-Symbol, Edge/Chrome --app) öffnen oft sehr schmal: einmal je Fenster auf eine
+// brauchbare Größe bringen. In normalen Browser-Tabs ist resizeTo wirkungslos bzw. wird übersprungen.
+function fitAppWindow() {
+  try {
+    if (window.locationbar.visible || window.opener || sessionStorage.getItem('tb-fit')) return;
+    sessionStorage.setItem('tb-fit', '1');
+    const sc = window.screen, aw = sc.availWidth, ah = sc.availHeight;
+    const w = Math.min(1280, aw - 40), hh = Math.min(900, ah - 40);
+    if (window.outerWidth >= w - 40 && window.outerHeight >= hh - 40) return;
+    const nw = Math.max(window.outerWidth, w), nh = Math.max(window.outerHeight, hh);
+    window.resizeTo(nw, nh);
+    window.moveTo((sc.availLeft || 0) + Math.round((aw - nw) / 2), (sc.availTop || 0) + Math.round((ah - nh) / 2));
+  } catch { /* nicht erlaubt – egal */ }
+}
+
 async function boot() {
   const startQ = (new URLSearchParams(location.search).get('q') || '').trim().slice(0, 100);
   if (startQ) {
@@ -81,6 +97,7 @@ async function boot() {
       await new Promise((r) => setTimeout(r, 300));
     }
   }
+  fitAppWindow();
   window.addEventListener('tb:logout', () => {
     if (S.site.publicDirectory) { toast('Sitzung abgelaufen – du siehst das Telefonbuch jetzt als Gast.', 'err'); setMe(null); showMain(); }
     else showLogin('Sitzung abgelaufen – bitte erneut anmelden.');
@@ -173,6 +190,7 @@ async function reload(keepSel = true) {
   }
   S.today = d.today || new Date().toISOString().slice(0, 10);
   S.channels = d.channels || [];
+  S.tasks = d.tasks || [];
   S.chanById = new Map(S.channels.map((c) => [c.id, c]));
   S.openReports = d.openReports || 0;
   S.cats = d.categories || [];
@@ -191,12 +209,16 @@ async function reload(keepSel = true) {
   const hasOrg = S.org.units.length > 0 || S.me.isAdmin;
   $('#vb-org').hidden = !hasOrg;
   $('#vb-village').hidden = !(hasOrg && funOn('village'));
+  const hasTasks = S.tasks.length > 0 || S.me.isAdmin;
+  $('#vb-tasks').hidden = !hasTasks;
   $('#fav-only').hidden = !!S.me.guest;
-  $('#viewbar').hidden = !hasOrg && S.me.guest;
-  if ((S.view === 'org' && !hasOrg) || (S.view === 'village' && $('#vb-village').hidden)) setView('list');
+  $('#viewbar').hidden = !hasOrg && !hasTasks && S.me.guest;
+  if ((S.view === 'org' && !hasOrg) || (S.view === 'village' && $('#vb-village').hidden) || (S.view === 'tasks' && !hasTasks)) setView('list');
   if (S.me.guest) S.favOnly = false;
   $('#fav-only').classList.toggle('active', !!S.favOnly);
   document.body.classList.toggle('upside', funOn('seasonal') && F.isAprilFools(S.today));
+  T.setup({ S, h, $, api, toast, openDialog, confirmDialog, field, reload, update, setView, isMobile, setTab, personPicker, pickList, personLink, personContact, contactSummary, absNow, empByID, unitLabel, unitSelect,
+    openUnit: (id) => { setView('org'); S.orgCur = id; S.selPeople.clear(); update(); $('#orgview').scrollTop = 0; } });
   F.setup({ S, A, h, $, api, toast, openDialog, goPerson, orgGo, avatarURL, viewAvatar, unitLabel, unitPath, unitMembers, unitLeads, unitLevel, personContact, contactSummary, nameOf, fmtDay, absNow, setView, update, funOn, catName, catColor });
   update();
 }
@@ -243,11 +265,12 @@ function bindUI() {
     // ^ (deutsche Tastatur: Tottaste, code „Backquote“) öffnet das Terminal
     if ((e.code === 'Backquote' || e.key === '^') && !e.ctrlKey && !e.altKey && !e.metaKey && funOn('terminal') && !$('#dlg').open && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) { e.preventDefault(); F.openTerminal(); }
   });
-  try { const v = localStorage.getItem('tb.view'); if (v === 'org' || v === 'village') setView(v); } catch { /* egal */ }
+  try { const v = localStorage.getItem('tb.view'); if (v === 'org' || v === 'village' || v === 'tasks') setView(v); } catch { /* egal */ }
   setTab('people');
   $('#user-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(); });
   $('#help-btn').addEventListener('click', () => helpDialog());
   document.addEventListener('click', (e) => { if (!$('#menu').hidden && !$('#menu').contains(e.target)) $('#menu').hidden = true; });
+  window.addEventListener('resize', () => { if (!$('#menu').hidden) placeMenu(); });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !$('#dlg').open) {
       if (!$('#menu').hidden) { $('#menu').hidden = true; return; }
@@ -391,6 +414,7 @@ function update() {
   renderTags();
   if (S.view === 'org') renderOrg();
   if (S.view === 'village') F.renderVillage();
+  if (S.view === 'tasks') T.renderTasks();
 }
 
 // Mobil: Personen und Schlagworte als Reiter
@@ -508,7 +532,8 @@ function renderCard() {
       line('✉', 'E-Mail', p.email, p.email ? 'mailto:' + p.email : null),
       p.note ? h('div', { class: 'kv note' }, h('span', { class: 'k' }, '📝 Notiz'), h('span', null, p.note)) : null,
       p.sharedOut ? h('div', { class: 'kv note' }, h('span', { class: 'k' }, '🔗 Geteilt mit'), h('span', null, shareSummary(p.shares))) : null,
-      ...(isEmp ? cardOrgLines(p) : [])),
+      ...(isEmp ? cardOrgLines(p) : []),
+      ...(isEmp ? T.cardLines(p) : [])),
     btns.length ? h('div', { class: 'card-btns' }, btns) : null));
 }
 
@@ -620,6 +645,7 @@ function toggleMenu() {
       item('🗂 Kategorien verwalten', categoryManager),
       item('🏢 Organisation verwalten', orgManager),
       item('💬 Kontaktwege verwalten', channelManager),
+      item('🧭 Zuständigkeiten verwalten', () => T.taskManager()),
       item('📊 Datenqualität', qualityDialog),
       ...(S.site.reports !== false ? [item(`🚩 Meldungen${S.openReports ? ' (' + S.openReports + ' offen)' : ''}`, reportsDialog)] : []),
       item('🔄 AD-Abgleich', syncDialog),
@@ -629,7 +655,15 @@ function toggleMenu() {
   }
   items.push(h('div', { class: 'menu-sep' }), item('💻 Windows-Symbol (Infobereich)', clientDialog), item('❔ Hilfe', helpDialog), item('🚪 Abmelden', logout));
   m.replaceChildren(...items);
+  placeMenu();
   m.hidden = false;
+  m.scrollTop = 0;
+}
+
+// Menü direkt unter dem Profil-Knopf; Höhe begrenzt (CSS), damit alles erreichbar bleibt
+function placeMenu() {
+  const r = $('#user-btn').getBoundingClientRect();
+  $('#menu').style.setProperty('--menu-top', Math.max(8, Math.round(r.bottom + 6)) + 'px');
 }
 
 async function logout() {
@@ -661,6 +695,10 @@ function helpDialog() {
       ['Menü → ', h('b', null, 'Mein Avatar'), ': Pixel-Kopf gestalten, drehen (ziehen), im Bereich „Malen“ pixelgenau bemalen. ', kbd('Strg'), '+', kbd('Z'), ' macht rückgängig.'],
       ['Menü → ', h('b', null, 'Privaten Kontakt hinzufügen'), ': erscheint mit 🔒 in deiner Liste und ist nur für dich sichtbar.'],
       ['Private Kontakte lassen sich unter „Freigeben“ für einzelne Personen oder ein ganzes Amt teilen (🔗 Privat, geteilt). Bearbeiten kann nur, wer den Kontakt angelegt hat.']),
+    sec('🧭 Wer ist zuständig?',
+      ['Ansicht ', h('b', null, '🧭 Zuständig'), ': Anliegen eintippen (z. B. „Wohngeld“) und – falls nach Namen getrennt wird – den ', h('b', null, 'Nachnamen der Antragsteller:in'), '. Angezeigt werden die Zuständigen, die Vertretung und die Sprechzeiten.'],
+      'Umlaute zählen wie der Grundbuchstabe (Ä wie A, ß wie ss). Ist niemand Zuständiges erreichbar (🏖), steht ein Hinweis auf die Vertretung dabei.',
+      'Auf der Visitenkarte steht, wofür jemand zuständig ist – ein Klick öffnet die Aufgabe.'),
     sec('🏢 Organisation, Vertretung, Abwesenheit',
       ['Oben links zwischen ', h('b', null, '☰ Liste'), ' und ', h('b', null, '🏢 Organisation'), ' wechseln: Im Organigramm klickst du dich von Ebene zu Ebene, oben stehen jeweils Leitung und Stellvertretung.'],
       'Auf der Visitenkarte steht „Vertretung: …“ – ein Klick springt direkt zu dieser Person. 🏖 zeigt eine Abwesenheit samt Zeitraum und Vertretung.',
@@ -990,8 +1028,10 @@ function deleteCategory(c) {
 // ---------- Ansicht: Liste / Organigramm ----------
 
 function setView(v) {
-  S.view = ['org', 'village'].includes(v) ? v : 'list';
+  S.view = ['org', 'village', 'tasks'].includes(v) ? v : 'list';
   $('#main').classList.toggle('view-org', S.view !== 'list');
+  $('#main').classList.toggle('view-tasks', S.view === 'tasks');
+  $('#taskview').hidden = S.view !== 'tasks';
   $$('#viewbar button[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === S.view));
   $('#orgview').hidden = S.view !== 'org';
   $('#village').hidden = S.view !== 'village';
@@ -1273,7 +1313,8 @@ function renderOrg() {
       h('h3', null, unitLabel(cur)),
       h('div', { class: 'org-leads' },
         h('div', null, h('span', { class: 'k' }, '★ Leitung'), leaders.length ? links(leaders) : h('span', { class: 'muted' }, lv.leaderTag ? '–' : '– (kein Leitungs-Schlagwort für diese Ebene)')),
-        h('div', null, h('span', { class: 'k' }, '☆ Stellvertretung'), deputies.length ? links(deputies) : h('span', { class: 'muted' }, '–')))));
+        h('div', null, h('span', { class: 'k' }, '☆ Stellvertretung'), deputies.length ? links(deputies) : h('span', { class: 'muted' }, '–'))),
+      ...T.unitExtras(cur)));
   }
   // Untereinheiten
   const kids = S.orgCur === -1 ? [] : S.unitKids.get(cur ? cur.id : 0) || [];
@@ -1620,6 +1661,7 @@ async function orgManager() {
         h('span', { class: 'grow' }),
         depth + 1 < S.org.levels.length ? h('button', { type: 'button', class: 'icon', title: 'Untereinheit anlegen', onclick: () => unitDialog(null, u.id) }, '➕') : null,
         h('button', { type: 'button', class: 'icon', title: 'Personen zuordnen', onclick: () => membersDialog(u, true) }, '👥'),
+        h('button', { type: 'button', class: 'icon' + (u.hours ? ' on' : ''), title: u.hours ? 'Sprechzeiten: ' + T.hoursLines(u.hours).join(' · ') : 'Sprechzeiten festlegen', onclick: () => T.unitHoursDialog(u, orgManager) }, '🕘'),
         h('button', { type: 'button', class: 'icon', title: 'Bearbeiten', onclick: () => unitDialog(u) }, '✏️'),
         h('button', { type: 'button', class: 'icon danger', title: 'Löschen', onclick: async () => {
           const kids = (S.unitKids.get(u.id) || []).length;
@@ -2077,7 +2119,7 @@ async function storageDialog() {
 async function auditDialog() {
   const q = h('input', { type: 'search', placeholder: 'Suchen (Benutzer, Aktion, Eintrag …)' });
   const tbody = h('tbody');
-  const ACT = { mysql_import: 'Übernahme aus MySQL', login: 'Anmeldung', login_failed: 'Anmeldung fehlgeschlagen', tags_update: 'Schlagworte geändert', avatar_update: 'Avatar geändert', employee_create: 'Eintrag angelegt', employee_update: 'Stammdaten geändert', employee_delete: 'Eintrag gelöscht', tag_create: 'Schlagwort angelegt', tag_update: 'Schlagwort geändert', tag_merge: 'Schlagworte zusammengeführt', tag_delete: 'Schlagwort gelöscht', tag_cleanup: 'Unbenutzte Schlagworte gelöscht', ad_sync: 'AD-Abgleich', category_create: 'Kategorie angelegt', category_update: 'Kategorie geändert', category_delete: 'Kategorie gelöscht', storage_online: 'Datenbank wieder erreichbar', deputies_update: 'Vertretung geändert', absences_update: 'Abwesenheit geändert', report_create: 'Fehler gemeldet', report_missing: 'Fehlende Person gemeldet', report_done: 'Meldung erledigt', report_rejected: 'Meldung abgelehnt', report_open: 'Meldung wieder geöffnet', org_levels: 'Ebenen geändert', org_unit_create: 'Einheit angelegt', org_unit_update: 'Einheit geändert', org_unit_delete: 'Einheit gelöscht', org_members: 'Einheit: Zuordnung', org_assign: 'Organisation zugeordnet', channel_create: 'Kontaktweg angelegt', channel_update: 'Kontaktweg geändert', channel_delete: 'Kontaktweg gelöscht', channel_members: 'Kontaktweg zugewiesen', feed_token: 'Favoriten-Code', fun_settings: 'Extras geändert', org_auto_assign: 'Automatische Zuordnung', reports_powershell: 'PowerShell-Skript erzeugt', reports_autoclose: 'Meldungen automatisch erledigt' };
+  const ACT = { mysql_import: 'Übernahme aus MySQL', login: 'Anmeldung', login_failed: 'Anmeldung fehlgeschlagen', tags_update: 'Schlagworte geändert', avatar_update: 'Avatar geändert', employee_create: 'Eintrag angelegt', employee_update: 'Stammdaten geändert', employee_delete: 'Eintrag gelöscht', tag_create: 'Schlagwort angelegt', tag_update: 'Schlagwort geändert', tag_merge: 'Schlagworte zusammengeführt', tag_delete: 'Schlagwort gelöscht', tag_cleanup: 'Unbenutzte Schlagworte gelöscht', ad_sync: 'AD-Abgleich', category_create: 'Kategorie angelegt', category_update: 'Kategorie geändert', category_delete: 'Kategorie gelöscht', storage_online: 'Datenbank wieder erreichbar', deputies_update: 'Vertretung geändert', absences_update: 'Abwesenheit geändert', report_create: 'Fehler gemeldet', report_missing: 'Fehlende Person gemeldet', report_done: 'Meldung erledigt', report_rejected: 'Meldung abgelehnt', report_open: 'Meldung wieder geöffnet', org_levels: 'Ebenen geändert', org_unit_create: 'Einheit angelegt', org_unit_update: 'Einheit geändert', org_unit_delete: 'Einheit gelöscht', org_members: 'Einheit: Zuordnung', org_assign: 'Organisation zugeordnet', channel_create: 'Kontaktweg angelegt', channel_update: 'Kontaktweg geändert', channel_delete: 'Kontaktweg gelöscht', channel_members: 'Kontaktweg zugewiesen', feed_token: 'Favoriten-Code', fun_settings: 'Extras geändert', org_auto_assign: 'Automatische Zuordnung', reports_powershell: 'PowerShell-Skript erzeugt', reports_autoclose: 'Meldungen automatisch erledigt', task_create: 'Aufgabe angelegt', task_update: 'Aufgabe geändert', task_delete: 'Aufgabe gelöscht', org_unit_hours: 'Sprechzeiten geändert' };
   const load = async () => {
     try {
       const r = await api('GET', '/api/admin/audit?limit=500&q=' + encodeURIComponent(q.value));

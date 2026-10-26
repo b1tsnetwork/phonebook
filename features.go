@@ -521,8 +521,9 @@ func (a *App) checkUnit(ctx context.Context, id int64, in *orgUnitInput) (OrgUni
 	if err != nil {
 		return OrgUnit{}, err
 	}
-	// Kontaktwege hängen nicht mehr an Einheiten (eigene Objekte, siehe channels.go)
-	return OrgUnit{ID: id, Parent: in.Parent, Name: in.Name, Short: in.Short, Sort: in.Sort, Leaders: leaders, Deputies: deps}, nil
+	// Kontaktwege hängen nicht mehr an Einheiten (eigene Objekte, siehe channels.go);
+	// Sprechzeiten werden separat gepflegt (PUT …/hours) und bleiben beim Bearbeiten erhalten.
+	return OrgUnit{ID: id, Parent: in.Parent, Name: in.Name, Short: in.Short, Sort: in.Sort, Leaders: leaders, Deputies: deps, Hours: byID[id].Hours}, nil
 }
 
 func (a *App) handleCreateOrgUnit(w http.ResponseWriter, r *http.Request) {

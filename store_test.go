@@ -254,6 +254,44 @@ func exerciseStore(t *testing.T, st Store) {
 	if l, _ := st.ListReports(ctx, "", 0); len(l) != 1 || l[0].EmployeeID != 0 || l[0].Target != "Vertreter" {
 		t.Fatalf("Meldung nach Löschen: %+v", l)
 	}
+	// Zuständigkeitsfinder: Aufgabe mit Bereichen; Sprechzeiten an der Einheit; Person löschen → aus Regeln entfernt
+	tid, err := st.CreateTask(ctx, Task{Name: "Wohngeld", OrgUnit: dez, Hours: &Hours{Slots: []HourSlot{{Days: []int{1}, From: "08:00", To: "12:00"}}},
+		Rules: []TaskRule{{From: "A", To: "K", Leads: []int64{id}}, {From: "L", To: "Z", Leads: []int64{id}, Deputies: []int64{id}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := st.ListTasks(ctx); len(l) != 1 || l[0].ID != tid || len(l[0].Rules) != 2 || l[0].Hours == nil || l[0].Rules[1].Deputies[0] != id || l[0].OrgUnit != dez {
+		t.Fatalf("ListTasks: %+v", l)
+	}
+	if err := st.UpdateTask(ctx, Task{ID: tid, Name: "Wohngeld (neu)", Rules: []TaskRule{{Leads: []int64{id}}}}); err != nil {
+		t.Fatal(err)
+	}
+	tmp, _ := st.CreateEmployee(ctx, &EmployeeRec{LastName: "Tmp", Active: true, CreatedAt: now, UpdatedAt: now, Tags: []int64{}})
+	_ = st.UpdateTask(ctx, Task{ID: tid, Name: "Wohngeld", Rules: []TaskRule{{Leads: []int64{id, tmp}, Deputies: []int64{tmp}}}})
+	if err := st.DeleteEmployee(ctx, tmp); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := st.ListTasks(ctx); len(l[0].Rules[0].Leads) != 1 || len(l[0].Rules[0].Deputies) != 0 {
+		t.Fatalf("Person nach Löschen noch zuständig: %+v", l[0].Rules)
+	}
+	if err := st.UpdateTask(ctx, Task{ID: 9999, Name: "x"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdateTask unbekannt: %v", err)
+	}
+	us, _ := st.ListOrgUnits(ctx)
+	for _, u := range us {
+		if u.ID == dez {
+			u.Hours = &Hours{Note: "nach Vereinbarung"}
+			if err := st.UpdateOrgUnit(ctx, u); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	us, _ = st.ListOrgUnits(ctx)
+	for _, u := range us {
+		if u.ID == dez && (u.Hours == nil || u.Hours.Note != "nach Vereinbarung") {
+			t.Fatalf("Sprechzeiten der Einheit: %+v", u)
+		}
+	}
 	// Meldung „fehlender Kontakt“ mit Angaben (Spalte details)
 	if _, err := st.CreateReport(ctx, Report{Target: "Neu, Nina", Field: fieldMissing, Reporter: "anna", CreatedAt: now, Details: &NewContact{LastName: "Neu", FirstName: "Nina", Email: "nina.neu@example.org", Amt: "20"}}); err != nil {
 		t.Fatal(err)
@@ -381,7 +419,7 @@ func TestJSONStore(t *testing.T) {
 	}
 	// IDs laufen nach dem Laden weiter
 	id, err := st2.CreateEmployee(context.Background(), &EmployeeRec{LastName: "Neu", Source: "manual", Active: true})
-	if err != nil || id != 5 {
+	if err != nil || id != 6 { // 5 war der gelöschte Tmp-Eintrag
 		t.Fatalf("neue ID %d %v", id, err)
 	}
 	// Kaputte Datei wird abgelehnt, nicht überschrieben

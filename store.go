@@ -94,6 +94,11 @@ type Store interface {
 	UpdateChannel(ctx context.Context, c ContactChannel) error // ErrNotFound
 	DeleteChannel(ctx context.Context, id int64) error         // Zuweisungen werden entfernt
 	SetChannel(ctx context.Context, ids []int64, channel int64) (int, error)
+	// Zuständigkeitsfinder
+	ListTasks(ctx context.Context) ([]Task, error)
+	CreateTask(ctx context.Context, t Task) (int64, error)
+	UpdateTask(ctx context.Context, t Task) error // ErrNotFound
+	DeleteTask(ctx context.Context, id int64) error
 
 	// Persönliche Einstellungen (JSON, siehe UserPrefs) je Benutzername
 	GetPrefs(ctx context.Context, username string) (string, error) // "" = keine
@@ -202,6 +207,75 @@ type OrgUnit struct {
 	Deputies []int64 `json:"deputies,omitempty"`
 	// Bevorzugter Kontaktweg – gilt für die Einheit, ihre Untereinheiten und alle zugeordneten Personen
 	Contact *ContactPref `json:"contact,omitempty"`
+	Hours   *Hours       `json:"hours,omitempty"` // Sprechzeiten (gelten auch für Untereinheiten ohne eigene)
+}
+
+// Hours: wöchentliche Sprechzeiten mit Hinweis (z. B. „und nach Vereinbarung“)
+type Hours struct {
+	Slots []HourSlot `json:"slots,omitempty"`
+	Note  string     `json:"note,omitempty"`
+}
+
+// HourSlot: z. B. Mo, Di, Do 08:00–12:00
+type HourSlot struct {
+	Days []int  `json:"days"` // 1 = Montag … 7 = Sonntag
+	From string `json:"from"` // "08:00"
+	To   string `json:"to"`   // "12:00"
+}
+
+func (h *Hours) clone() *Hours {
+	if h == nil {
+		return nil
+	}
+	x := Hours{Note: h.Note}
+	for _, s := range h.Slots {
+		x.Slots = append(x.Slots, HourSlot{Days: append([]int(nil), s.Days...), From: s.From, To: s.To})
+	}
+	return &x
+}
+
+// Task: Aufgabe im Zuständigkeitsfinder (z. B. „Wohngeld“) mit Namenstrennung
+type Task struct {
+	ID          int64      `json:"id"`
+	Name        string     `json:"name"`
+	Keywords    string     `json:"keywords,omitempty"` // Suchbegriffe, z. B. „Mietzuschuss, Lastenzuschuss“
+	Description string     `json:"description,omitempty"`
+	OrgUnit     int64      `json:"orgUnit,omitempty"`
+	Hours       *Hours     `json:"hours,omitempty"` // eigene Sprechzeiten; sonst die der Einheit
+	Rules       []TaskRule `json:"rules"`
+	Sort        int        `json:"sort"`
+}
+
+// TaskRule: Namenstrennung (Anfangsbuchstaben des Nachnamens, leer = alle) → Zuständige und Vertretung
+type TaskRule struct {
+	From     string  `json:"from,omitempty"`
+	To       string  `json:"to,omitempty"`
+	Note     string  `json:"note,omitempty"`
+	Leads    []int64 `json:"leads,omitempty"`
+	Deputies []int64 `json:"deputies,omitempty"`
+}
+
+func (t *Task) clone() Task {
+	c := *t
+	c.Hours = t.Hours.clone()
+	c.Rules = make([]TaskRule, len(t.Rules))
+	for i, r := range t.Rules {
+		r.Leads, r.Deputies = copyIDs(r.Leads), copyIDs(r.Deputies)
+		c.Rules[i] = r
+	}
+	return c
+}
+
+// removeEmp entfernt eine Person aus allen Regeln; true, wenn etwas geändert wurde
+func (t *Task) removeEmp(id int64) bool {
+	hit := false
+	for i := range t.Rules {
+		var h1, h2 bool
+		t.Rules[i].Leads, h1 = removeID(t.Rules[i].Leads, id)
+		t.Rules[i].Deputies, h2 = removeID(t.Rules[i].Deputies, id)
+		hit = hit || h1 || h2
+	}
+	return hit
 }
 
 // ContactPref: „Bitte bevorzugt über …“ (Ticketsystem, Funktionspostfach, Hotline)
@@ -380,6 +454,7 @@ type Snapshot struct {
 	Settings   map[string]string `json:"settings,omitempty"`
 	Reports    []Report          `json:"reports,omitempty"`
 	Channels   []ContactChannel  `json:"contactChannels,omitempty"`
+	Tasks      []Task            `json:"tasks,omitempty"`
 	Prefs      map[string]string `json:"userPrefs,omitempty"`
 }
 
@@ -491,6 +566,23 @@ func (s *Snapshot) validate() error {
 			return fmt.Errorf("Kontaktweg %d ungültig/doppelt", c.ID)
 		}
 		chans[c.ID] = true
+	}
+	taskIDs := map[int64]bool{}
+	for i := range s.Tasks {
+		t := &s.Tasks[i]
+		if t.ID <= 0 || taskIDs[t.ID] || t.Name == "" {
+			return fmt.Errorf("Aufgabe %d ungültig/doppelt", t.ID)
+		}
+		taskIDs[t.ID] = true
+		if t.OrgUnit != 0 && units[t.OrgUnit] == nil {
+			t.OrgUnit = 0
+		}
+		for j := range t.Rules {
+			t.Rules[j].Leads, t.Rules[j].Deputies = keepEmp(t.Rules[j].Leads), keepEmp(t.Rules[j].Deputies)
+		}
+		if t.Rules == nil {
+			t.Rules = []TaskRule{}
+		}
 	}
 	for i := range s.Employees {
 		e := &s.Employees[i]

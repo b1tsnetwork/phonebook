@@ -197,6 +197,9 @@ func (r *readOnlyStore) CreateChannel(context.Context, ContactChannel) (int64, e
 }
 func (r *readOnlyStore) UpdateChannel(context.Context, ContactChannel) error { return ErrReadOnly }
 func (r *readOnlyStore) DeleteChannel(context.Context, int64) error          { return ErrReadOnly }
+func (r *readOnlyStore) CreateTask(context.Context, Task) (int64, error)     { return 0, ErrReadOnly }
+func (r *readOnlyStore) UpdateTask(context.Context, Task) error              { return ErrReadOnly }
+func (r *readOnlyStore) DeleteTask(context.Context, int64) error             { return ErrReadOnly }
 func (r *readOnlyStore) SetChannel(context.Context, []int64, int64) (int, error) {
 	return 0, ErrReadOnly
 }

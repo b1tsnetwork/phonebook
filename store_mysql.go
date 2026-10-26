@@ -901,6 +901,12 @@ func (m *mysqlStore) Export(ctx context.Context) (*Snapshot, error) {
 	if s.Channels, err = m.ListChannels(ctx); err != nil {
 		return nil, err
 	}
+	if s.Tasks, err = m.ListTasks(ctx); err != nil {
+		return nil, err
+	}
+	if len(s.Tasks) == 0 {
+		s.Tasks = nil
+	}
 	if s.Prefs, err = m.ListPrefs(ctx); err != nil {
 		return nil, err
 	}
@@ -936,13 +942,19 @@ func (m *mysqlStore) Import(ctx context.Context, s *Snapshot) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, t := range []string{"employee_tags", "employees", "tags", "private_shares", "private_contacts", "tag_categories", "local_users", "audit_log", "sync_runs", "sessions", "org_units", "settings", "reports", "contact_channels", "user_prefs"} {
+	for _, t := range []string{"employee_tags", "employees", "tags", "private_shares", "private_contacts", "tag_categories", "local_users", "audit_log", "sync_runs", "sessions", "org_units", "settings", "reports", "contact_channels", "user_prefs", "tasks"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
 			return err
 		}
 	}
 	for u, v := range s.Prefs {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO user_prefs (username, prefs) VALUES (?,?)`, u, v); err != nil {
+			return err
+		}
+	}
+	for _, t := range s.Tasks {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO tasks (id, name, keywords, description, org_unit_id, hours, rules, sort) VALUES (?,?,?,?,?,?,?,?)`,
+			t.ID, t.Name, t.Keywords, t.Description, nullID(t.OrgUnit), hoursCol(t.Hours), jsonCol(t.Rules), t.Sort); err != nil {
 			return err
 		}
 	}
@@ -953,8 +965,8 @@ func (m *mysqlStore) Import(ctx context.Context, s *Snapshot) error {
 		}
 	}
 	for _, u := range s.OrgUnits {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO org_units (id, parent_id, name, short_name, sort, leaders, deputies, contact) VALUES (?,?,?,?,?,?,?,?)`,
-			u.ID, nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), contactCol(u.Contact)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO org_units (id, parent_id, name, short_name, sort, leaders, deputies, contact, hours) VALUES (?,?,?,?,?,?,?,?,?)`,
+			u.ID, nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), contactCol(u.Contact), hoursCol(u.Hours)); err != nil {
 			return err
 		}
 	}
@@ -1085,6 +1097,28 @@ func removeRefsTx(ctx context.Context, tx *sql.Tx, id int64) error {
 			}
 		}
 	}
+	trows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(rules,'') FROM tasks`)
+	if err != nil {
+		return err
+	}
+	list = list[:0]
+	for trows.Next() {
+		var r row
+		if err := trows.Scan(&r.id, &r.deps); err != nil {
+			trows.Close()
+			return err
+		}
+		list = append(list, r)
+	}
+	trows.Close()
+	for _, r := range list {
+		t := Task{Rules: parseCol[TaskRule](r.deps)}
+		if t.removeEmp(id) {
+			if _, err := tx.ExecContext(ctx, `UPDATE tasks SET rules = ? WHERE id = ?`, jsonCol(t.Rules), r.id); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -1120,7 +1154,7 @@ func (m *mysqlStore) SetOrgUnit(ctx context.Context, ids []int64, unit int64) (i
 }
 
 func (m *mysqlStore) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
-	rows, err := m.db.QueryContext(ctx, `SELECT id, COALESCE(parent_id,0), name, short_name, sort, COALESCE(leaders,''), COALESCE(deputies,''), COALESCE(contact,'') FROM org_units ORDER BY sort, name, id`)
+	rows, err := m.db.QueryContext(ctx, `SELECT id, COALESCE(parent_id,0), name, short_name, sort, COALESCE(leaders,''), COALESCE(deputies,''), COALESCE(contact,''), COALESCE(hours,'') FROM org_units ORDER BY sort, name, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1128,10 +1162,11 @@ func (m *mysqlStore) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
 	out := []OrgUnit{}
 	for rows.Next() {
 		var u OrgUnit
-		var l, d, c string
-		if err := rows.Scan(&u.ID, &u.Parent, &u.Name, &u.Short, &u.Sort, &l, &d, &c); err != nil {
+		var l, d, c, hs string
+		if err := rows.Scan(&u.ID, &u.Parent, &u.Name, &u.Short, &u.Sort, &l, &d, &c, &hs); err != nil {
 			return nil, err
 		}
+		u.Hours = parseHours(hs)
 		if c != "" {
 			var cp ContactPref
 			if json.Unmarshal([]byte(c), &cp) == nil {
@@ -1145,8 +1180,8 @@ func (m *mysqlStore) ListOrgUnits(ctx context.Context) ([]OrgUnit, error) {
 }
 
 func (m *mysqlStore) CreateOrgUnit(ctx context.Context, u OrgUnit) (int64, error) {
-	res, err := m.db.ExecContext(ctx, `INSERT INTO org_units (parent_id, name, short_name, sort, leaders, deputies, contact, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-		nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), contactCol(u.Contact), time.Now().UTC())
+	res, err := m.db.ExecContext(ctx, `INSERT INTO org_units (parent_id, name, short_name, sort, leaders, deputies, contact, hours, created_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+		nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), contactCol(u.Contact), hoursCol(u.Hours), time.Now().UTC())
 	if err != nil {
 		return 0, err
 	}
@@ -1154,8 +1189,8 @@ func (m *mysqlStore) CreateOrgUnit(ctx context.Context, u OrgUnit) (int64, error
 }
 
 func (m *mysqlStore) UpdateOrgUnit(ctx context.Context, u OrgUnit) error {
-	res, err := m.db.ExecContext(ctx, `UPDATE org_units SET parent_id = ?, name = ?, short_name = ?, sort = ?, leaders = ?, deputies = ?, contact = ? WHERE id = ?`,
-		nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), contactCol(u.Contact), u.ID)
+	res, err := m.db.ExecContext(ctx, `UPDATE org_units SET parent_id = ?, name = ?, short_name = ?, sort = ?, leaders = ?, deputies = ?, contact = ?, hours = ? WHERE id = ?`,
+		nullID(u.Parent), u.Name, u.Short, u.Sort, jsonCol(u.Leaders), jsonCol(u.Deputies), contactCol(u.Contact), hoursCol(u.Hours), u.ID)
 	if err != nil {
 		return err
 	}
@@ -1178,6 +1213,9 @@ func (m *mysqlStore) DeleteOrgUnit(ctx context.Context, id int64) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE employees SET org_unit_id = ? WHERE org_unit_id = ?`, nullID(parent), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET org_unit_id = ? WHERE org_unit_id = ?`, nullID(parent), id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM org_units WHERE id = ?`, id); err != nil {
@@ -1393,4 +1431,76 @@ func (m *mysqlStore) ListPrefs(ctx context.Context) (map[string]string, error) {
 		out[u] = v
 	}
 	return out, rows.Err()
+}
+
+// ---------- Zuständigkeitsfinder ----------
+
+func hoursCol(h *Hours) any {
+	if h == nil || (len(h.Slots) == 0 && h.Note == "") {
+		return nil
+	}
+	b, _ := json.Marshal(h)
+	return string(b)
+}
+
+func parseHours(s string) *Hours {
+	if s == "" {
+		return nil
+	}
+	var h Hours
+	if json.Unmarshal([]byte(s), &h) != nil {
+		return nil
+	}
+	return &h
+}
+
+func (m *mysqlStore) ListTasks(ctx context.Context) ([]Task, error) {
+	rows, err := m.db.QueryContext(ctx, `SELECT id, name, keywords, description, COALESCE(org_unit_id,0), COALESCE(hours,''), COALESCE(rules,''), sort FROM tasks ORDER BY sort, name, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Task{}
+	for rows.Next() {
+		var t Task
+		var hs, rs string
+		if err := rows.Scan(&t.ID, &t.Name, &t.Keywords, &t.Description, &t.OrgUnit, &hs, &rs, &t.Sort); err != nil {
+			return nil, err
+		}
+		t.Hours = parseHours(hs)
+		if t.Rules = parseCol[TaskRule](rs); t.Rules == nil {
+			t.Rules = []TaskRule{}
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (m *mysqlStore) CreateTask(ctx context.Context, t Task) (int64, error) {
+	res, err := m.db.ExecContext(ctx, `INSERT INTO tasks (name, keywords, description, org_unit_id, hours, rules, sort, updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+		t.Name, t.Keywords, t.Description, nullID(t.OrgUnit), hoursCol(t.Hours), jsonCol(t.Rules), t.Sort, time.Now().UTC())
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (m *mysqlStore) UpdateTask(ctx context.Context, t Task) error {
+	res, err := m.db.ExecContext(ctx, `UPDATE tasks SET name = ?, keywords = ?, description = ?, org_unit_id = ?, hours = ?, rules = ?, sort = ?, updated_at = ? WHERE id = ?`,
+		t.Name, t.Keywords, t.Description, nullID(t.OrgUnit), hoursCol(t.Hours), jsonCol(t.Rules), t.Sort, time.Now().UTC(), t.ID)
+	if err != nil {
+		return err
+	}
+	return m.mustExist(ctx, res, `SELECT 1 FROM tasks WHERE id = ?`, t.ID)
+}
+
+func (m *mysqlStore) DeleteTask(ctx context.Context, id int64) error {
+	res, err := m.db.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

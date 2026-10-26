@@ -121,3 +121,40 @@ func TestMissingContactAutoClose(t *testing.T) {
 		t.Fatalf("Meldung: %+v", l)
 	}
 }
+
+func TestNameRanges(t *testing.T) {
+	if foldName("Müller-Lüdenscheidt") != "MULLERLUDENSCHEIDT" || foldName("Groß") != "GROSS" || foldName("Çelik") != "CELIK" || foldName("O'Neill") != "ONEILL" {
+		t.Fatalf("foldName: %q %q %q", foldName("Müller-Lüdenscheidt"), foldName("Groß"), foldName("Çelik"))
+	}
+	if f, to, err := cleanRange("sch", "SZ"); err != nil || f != "Sch" || to != "Sz" {
+		t.Fatalf("cleanRange: %q %q %v", f, to, err)
+	}
+	if _, _, err := cleanRange("M", "A"); err == nil {
+		t.Fatal("verkehrter Bereich akzeptiert")
+	}
+	if _, _, err := cleanRange("A1", "B"); err != nil {
+		t.Fatal("Ziffern sollten wegfallen") // „A1“ → „A“
+	}
+	rules := []TaskRule{{From: "A", To: "M"}, {From: "N", To: "Sch"}, {From: "Sci", To: "Z"}, {}}
+	for name, want := range map[string]int{"Ahrens": 0, "Mzyk": 0, "Nagel": 1, "Schulz": 1, "Schwarz": 1, "Scivoli": 2, "Sander": 1, "Ötztal": 1, "Zander": 2, "Ägidius": 0, "-": 3} {
+		if got := matchRule(rules, name); got != want {
+			t.Errorf("matchRule(%q) = %d, erwartet %d", name, got, want)
+		}
+	}
+	if _, _, ok := overlap([]TaskRule{{From: "A", To: "K"}, {From: "K", To: "Z"}}); !ok {
+		t.Fatal("Überschneidung A–K/K–Z nicht erkannt")
+	}
+	if _, _, ok := overlap([]TaskRule{{From: "A", To: "Sch"}, {From: "Sci", To: "Z"}}); ok {
+		t.Fatal("A–Sch/Sci–Z fälschlich als Überschneidung")
+	}
+	h, err := cleanHours(&Hours{Slots: []HourSlot{{Days: []int{4, 1, 1}, From: "08:00", To: "12:00"}}})
+	if err != nil || len(h.Slots[0].Days) != 2 || h.Slots[0].Days[0] != 1 {
+		t.Fatalf("cleanHours: %+v %v", h, err)
+	}
+	if _, err := cleanHours(&Hours{Slots: []HourSlot{{Days: []int{1}, From: "12:00", To: "08:00"}}}); err == nil {
+		t.Fatal("Ende vor Beginn akzeptiert")
+	}
+	if h, _ := cleanHours(&Hours{}); h != nil {
+		t.Fatal("leere Sprechzeiten sollten nil sein")
+	}
+}

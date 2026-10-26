@@ -235,6 +235,7 @@ func seedOrg(ctx context.Context, a *App, amter []string) error {
 		tin = append(tin, TagInput{Name: tag})
 		_, _ = st.SetEmployeeTags(ctx, e.ID, tin, "demo", true)
 	}
+	unitOf, peopleOf := map[string]int64{}, map[string][]int64{}
 	for i, amt := range amter {
 		num, name, _ := strings.Cut(amt, " – ")
 		uid, err := st.CreateOrgUnit(ctx, OrgUnit{Parent: dez[parentOf[num[:1]]], Name: name, Short: num, Sort: i})
@@ -254,6 +255,7 @@ func seedOrg(ctx context.Context, a *App, amter []string) error {
 		if _, err := st.SetOrgUnit(ctx, ids, uid); err != nil {
 			return err
 		}
+		unitOf[num], peopleOf[num] = uid, ids
 		if len(members) > 2 {
 			leadSet(members[1], "Amtsleitung")
 			leadSet(members[2], "Stv. Amtsleitung")
@@ -283,6 +285,7 @@ func seedOrg(ctx context.Context, a *App, amter []string) error {
 			}
 		}
 	}
+	seedTasks(ctx, st, unitOf, peopleOf)
 	// Max Muster: Vertretung und eine aktuelle Abwesenheit
 	if mid, _ := st.EmployeeIDByUsername(ctx, "mmuster"); mid != 0 && len(recs) > 5 {
 		_ = st.SetDeputies(ctx, mid, []int64{recs[3].ID, recs[4].ID})
@@ -294,4 +297,53 @@ func seedOrg(ctx context.Context, a *App, amter []string) error {
 		})
 	}
 	return nil
+}
+
+// seedTasks: Beispiele für den Zuständigkeitsfinder (Namenstrennung, Vertretungen, Sprechzeiten)
+func seedTasks(ctx context.Context, st Store, unitOf map[string]int64, peopleOf map[string][]int64) {
+	p := func(num string, i int) []int64 {
+		l := peopleOf[num]
+		if len(l) == 0 {
+			return nil
+		}
+		return []int64{l[(i+3)%len(l)]}
+	}
+	two := func(num string, i, j int) []int64 { return append(p(num, i), p(num, j)...) }
+	wd := []int{1, 2, 3, 4, 5}
+	setHours := func(num string, h *Hours) {
+		units, _ := st.ListOrgUnits(ctx)
+		for _, u := range units {
+			if u.ID == unitOf[num] {
+				u.Hours = h
+				_ = st.UpdateOrgUnit(ctx, u)
+			}
+		}
+	}
+	setHours("50", &Hours{Slots: []HourSlot{{Days: []int{1, 2, 4}, From: "08:00", To: "12:00"}, {Days: []int{4}, From: "14:00", To: "17:30"}}, Note: "Termine auch nach Vereinbarung"})
+	setHours("63", &Hours{Slots: []HourSlot{{Days: []int{2}, From: "08:00", To: "12:00"}, {Days: []int{4}, From: "14:00", To: "18:00"}}})
+	setHours("20", &Hours{Slots: []HourSlot{{Days: wd, From: "08:30", To: "12:00"}}})
+	tasks := []Task{
+		{Name: "Wohngeld", Keywords: "Mietzuschuss, Lastenzuschuss, Miete", Description: "Antrag, Weiterbewilligung und Änderungen. Unterlagen: Mietvertrag, Einkommensnachweise.", OrgUnit: unitOf["50"],
+			Rules: []TaskRule{{From: "A", To: "K", Leads: p("50", 0), Deputies: p("50", 1)}, {From: "L", To: "Z", Leads: two("50", 1, 2), Deputies: p("50", 0)}}},
+		{Name: "Grundsicherung", Keywords: "Sozialhilfe, SGB XII, Hilfe zum Lebensunterhalt", OrgUnit: unitOf["50"],
+			Rules: []TaskRule{{From: "A", To: "G", Leads: p("50", 3), Deputies: p("50", 4)}, {From: "H", To: "R", Leads: p("50", 4), Deputies: p("50", 3)}, {From: "S", To: "Z", Leads: p("50", 2), Deputies: two("50", 3, 4)}}},
+		{Name: "Bauanträge", Keywords: "Baugenehmigung, Bauvoranfrage, Bauantrag", OrgUnit: unitOf["63"],
+			Rules: []TaskRule{{From: "A", To: "M", Leads: p("63", 0), Deputies: p("63", 1)}, {From: "N", To: "Sch", Leads: p("63", 1), Deputies: p("63", 2)}, {From: "Sci", To: "Z", Leads: p("63", 2), Deputies: p("63", 0), Note: "auch Bauvoranfragen"}}},
+		{Name: "Hundesteuer", Keywords: "Hund anmelden, Hundemarke, Steuer", OrgUnit: unitOf["20"],
+			Rules: []TaskRule{{Leads: p("20", 0), Deputies: p("20", 1)}}},
+		{Name: "Gewerbeanmeldung", Keywords: "Gewerbe, Gewerbeummeldung, Gewerbeabmeldung", OrgUnit: unitOf["32"],
+			Hours: &Hours{Slots: []HourSlot{{Days: wd, From: "08:00", To: "12:00"}, {Days: []int{4}, From: "14:00", To: "18:00"}}},
+			Rules: []TaskRule{{From: "A", To: "K", Leads: p("32", 0), Deputies: p("32", 1)}, {From: "L", To: "Z", Leads: p("32", 1), Deputies: p("32", 0)}}},
+		{Name: "Schülerbeförderung", Keywords: "Schulweg, Busfahrkarte, Schülerticket", OrgUnit: unitOf["40"],
+			Rules: []TaskRule{{From: "A", To: "K", Leads: p("40", 0), Deputies: p("40", 1)}, {From: "M", To: "Z", Leads: p("40", 1)}}}, // Lücke „L“ als Beispiel
+	}
+	for _, t := range tasks {
+		ok := true
+		for _, r := range t.Rules {
+			ok = ok && len(r.Leads) > 0
+		}
+		if ok {
+			_, _ = st.CreateTask(ctx, t)
+		}
+	}
 }

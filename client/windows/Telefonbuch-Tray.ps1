@@ -26,7 +26,7 @@ param(
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$TbVersion = '1.2'
+$TbVersion = '1.3'
 $TbTitle = 'Telefonbuch'   # Seitentitel (<title>) – daran wird ein offenes Fenster erkannt
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -221,7 +221,11 @@ function Open-Tb([string]$Query) {
     return
   }
   if ($script:AppBrowser) {
-    Start-Process -FilePath $script:AppBrowser -ArgumentList ('--app=' + $target)
+    # Größe/Position für das App-Fenster: bis 1280×900, mittig im Arbeitsbereich
+    $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $ww = [Math]::Min(1280, $wa.Width - 40); $wh = [Math]::Min(900, $wa.Height - 40)
+    $wx = $wa.Left + [int](($wa.Width - $ww) / 2); $wy = $wa.Top + [int](($wa.Height - $wh) / 2)
+    Start-Process -FilePath $script:AppBrowser -ArgumentList @(('--app=' + $target), "--window-size=$ww,$wh", "--window-position=$wx,$wy")
   } else {
     Start-Process -FilePath $target
   }

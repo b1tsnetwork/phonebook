@@ -50,12 +50,13 @@
       <section class="pane left" aria-label="Personen">
         <div id="viewbar" class="viewbar" hidden>
           <div class="seg small" role="group" aria-label="Ansicht">
-            <button type="button" data-view="list" class="active">☰ Liste</button>
-            <button type="button" data-view="org" id="vb-org">🏢 Organisation</button>
-            <button type="button" data-view="village" id="vb-village" hidden>🏘 Dorf</button>
+            <button type="button" data-view="list" class="active" title="Liste">☰ <span class="vb-t">Liste</span></button>
+            <button type="button" data-view="org" id="vb-org" title="Organisation">🏢 <span class="vb-t">Organisation</span></button>
+            <button type="button" data-view="tasks" id="vb-tasks" hidden title="Zuständigkeitsfinder: Wer ist zuständig?">🧭 <span class="vb-t">Zuständig</span></button>
+            <button type="button" data-view="village" id="vb-village" hidden title="Dorf">🏘 <span class="vb-t">Dorf</span></button>
           </div>
           <span class="grow"></span>
-          <button type="button" id="fav-only" class="small-btn" aria-pressed="false" title="Nur Favoriten zeigen" hidden>★ Favoriten</button>
+          <button type="button" id="fav-only" class="small-btn" aria-pressed="false" title="Nur Favoriten zeigen" hidden>★ <span class="vb-t">Favoriten</span></button>
         </div>
         <div class="thead">
           <div class="cols labels">
@@ -81,6 +82,7 @@
         <div id="people" class="list" role="listbox" aria-multiselectable="true" aria-label="Personen"></div>
         <div id="orgview" class="list orgview" hidden></div>
         <div id="village" class="list village" hidden></div>
+        <div id="taskview" class="list taskview" hidden></div>
         <div id="people-empty" class="empty" hidden>Niemand gefunden.</div>
         <div id="people-foot" class="foot"></div>
       </section>

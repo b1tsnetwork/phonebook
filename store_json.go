@@ -38,6 +38,8 @@ type jsonStore struct {
 	nextReport int64
 	channels   map[int64]*ContactChannel
 	nextChan   int64
+	tasks      map[int64]*Task
+	nextTask   int64
 	prefs      map[string]string
 	users      map[string]*LocalUser
 	audit      []AuditEntry // älteste zuerst
@@ -217,6 +219,12 @@ func (s *jsonStore) apply(snap *Snapshot) {
 	s.units, s.settings, s.reports = map[int64]*OrgUnit{}, map[string]string{}, nil
 	s.nextUnit, s.nextReport = 1, 1
 	s.channels, s.nextChan = map[int64]*ContactChannel{}, 1
+	s.tasks, s.nextTask = map[int64]*Task{}, 1
+	for i := range snap.Tasks {
+		t := snap.Tasks[i].clone()
+		s.tasks[t.ID] = &t
+		s.nextTask = max(s.nextTask, t.ID+1)
+	}
 	s.prefs = map[string]string{}
 	for k, v := range snap.Prefs {
 		s.prefs[k] = v
@@ -284,6 +292,10 @@ func (s *jsonStore) snapshot(withAudit bool) *Snapshot {
 		snap.Channels = append(snap.Channels, *c)
 	}
 	sort.Slice(snap.Channels, func(i, j int) bool { return snap.Channels[i].ID < snap.Channels[j].ID })
+	for _, t := range s.tasks {
+		snap.Tasks = append(snap.Tasks, t.clone())
+	}
+	sort.Slice(snap.Tasks, func(i, j int) bool { return snap.Tasks[i].ID < snap.Tasks[j].ID })
 	if len(s.prefs) > 0 {
 		snap.Prefs = map[string]string{}
 		for k, v := range s.prefs {
@@ -548,6 +560,7 @@ func copyUnit(u *OrgUnit) OrgUnit {
 	c := *u
 	c.Leaders, c.Deputies = copyIDs(u.Leaders), copyIDs(u.Deputies)
 	c.Contact = u.Contact.clone()
+	c.Hours = u.Hours.clone()
 	return c
 }
 
@@ -669,6 +682,9 @@ func (s *jsonStore) DeleteEmployee(ctx context.Context, id int64) error {
 	for _, u := range s.units {
 		u.Leaders, _ = removeID(u.Leaders, id)
 		u.Deputies, _ = removeID(u.Deputies, id)
+	}
+	for _, t := range s.tasks {
+		t.removeEmp(id)
 	}
 	for i := range s.reports {
 		if s.reports[i].EmployeeID == id {
@@ -1287,6 +1303,11 @@ func (s *jsonStore) DeleteOrgUnit(ctx context.Context, id int64) error {
 			e.OrgUnit = u.Parent
 		}
 	}
+	for _, t := range s.tasks {
+		if t.OrgUnit == id {
+			t.OrgUnit = u.Parent
+		}
+	}
 	delete(s.units, id)
 	return s.commit()
 }
@@ -1467,4 +1488,56 @@ func (s *jsonStore) ListPrefs(ctx context.Context) (map[string]string, error) {
 		out[k] = v
 	}
 	return out, nil
+}
+
+// ---------- Zuständigkeitsfinder ----------
+
+func (s *jsonStore) ListTasks(ctx context.Context) ([]Task, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Task, 0, len(s.tasks))
+	for _, t := range s.tasks {
+		out = append(out, t.clone())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Sort != out[j].Sort {
+			return out[i].Sort < out[j].Sort
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (s *jsonStore) CreateTask(ctx context.Context, t Task) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := t.clone()
+	c.ID = s.nextTask
+	s.nextTask++
+	s.tasks[c.ID] = &c
+	return c.ID, s.commit()
+}
+
+func (s *jsonStore) UpdateTask(ctx context.Context, t Task) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tasks[t.ID] == nil {
+		return ErrNotFound
+	}
+	c := t.clone()
+	s.tasks[t.ID] = &c
+	return s.commit()
+}
+
+func (s *jsonStore) DeleteTask(ctx context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tasks[id] == nil {
+		return ErrNotFound
+	}
+	delete(s.tasks, id)
+	return s.commit()
 }
