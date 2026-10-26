@@ -121,8 +121,17 @@ const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math
 
 export function openQuiz() {
   const { S, h, A } = C;
-  const pool = S.people.filter((p) => p.kind === 'emp' && p.active && !p.hidden && !p.self && p.firstName && (p.avatar || (p.tags || []).length));
-  if (pool.length < 4) { C.toast('Für das Quiz braucht es mindestens vier Personen mit Avatar oder Schlagworten', 'err'); return; }
+  // Nur Personen mit eigenem Avatar – der graue Standard-Kopf (und einfarbige Blöcke) verraten nichts
+  const std = JSON.stringify(A.normalize(A.DEFAULT_AVATAR));
+  const ownHead = (p) => {
+    if (!p.avatar) return false;
+    const n = A.normalize(p.avatar);
+    if (n.eyeStyle === 'none' && n.mouthStyle === 'none') return false;
+    return JSON.stringify(n) !== std;
+  };
+  const people = S.people.filter((p) => p.kind === 'emp' && p.active && !p.hidden && !p.self && p.firstName);
+  const pool = people.filter(ownHead);
+  if (pool.length < 4) { C.toast(`Für das Quiz braucht es mindestens vier Personen mit eigenem Avatar (gerade ${pool.length})`, 'err'); return; }
   const ROUNDS = Math.min(10, pool.length);
   const order = shuffle([...pool]).slice(0, ROUNDS);
   let i = 0, score = 0, raf = 0;
@@ -137,7 +146,7 @@ export function openQuiz() {
       return;
     }
     const p = order[i];
-    const wrong = shuffle(pool.filter((x) => x !== p)).sort((a, b) => (b.amt === p.amt) - (a.amt === p.amt)).slice(0, 3); // gern aus demselben Amt – schwieriger
+    const wrong = shuffle(people.filter((x) => x !== p && x.firstName + x.lastName !== p.firstName + p.lastName)).sort((a, b) => (b.amt === p.amt) - (a.amt === p.amt)).slice(0, 3); // gern aus demselben Amt – schwieriger
     const opts = shuffle([p, ...wrong]);
     const cv = h('canvas', { class: 'quiz-av', width: 160, height: 160 });
     const av = C.viewAvatar(p.avatar || A.DEFAULT_AVATAR);

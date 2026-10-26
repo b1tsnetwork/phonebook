@@ -556,7 +556,16 @@ body.upside img.av, body.upside .card-av, body.upside .org-person img, body.upsi
 .term-out { flex: 1; overflow: auto; padding: 8px 12px; white-space: pre-wrap; }
 .term-row { min-height: 1.35em; }
 .term-line { display: flex; padding: 6px 12px 10px; gap: 4px; }
-.term-in { flex: 1; background: transparent; border: 0; outline: none; color: #e7ffe3; font: inherit; padding: 0; caret-color: #b6f5b0; }
+/* Eingabezeile wie im echten Terminal: keine Formular-Optik (überschreibt die globalen input-Stile) */
+.terminal input.term-in, .terminal input.term-in:focus, .terminal input.term-in:hover {
+  flex: 1; min-width: 0; height: auto; margin: 0; padding: 0; border: 0 !important; border-radius: 0; outline: none !important; box-shadow: none !important;
+  background: transparent !important; color: #e7ffe3 !important; -webkit-text-fill-color: #e7ffe3; caret-color: #b6f5b0;
+  font: inherit; line-height: inherit; appearance: none; -webkit-appearance: none;
+}
+.terminal input.term-in::selection { background: #2f6b2c; color: #ffffff; }
+.terminal input.term-in:-webkit-autofill { -webkit-box-shadow: 0 0 0 100px #0c0f0c inset !important; }
+.term-line { align-items: baseline; }
+.term-line .term-ps { white-space: pre; }
 .term-ps { color: #6fd36a; }
 .term-k { color: #7fae7a; }
 .term-h { color: #ffffff; font-weight: 700; }
