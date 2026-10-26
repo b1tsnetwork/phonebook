@@ -262,6 +262,22 @@ func exerciseStore(t *testing.T, st Store) {
 	if got.OrgUnit != dez {
 		t.Fatalf("nach Löschen der Einheit: %d", got.OrgUnit)
 	}
+	// Persönliche Einstellungen
+	if v, _ := st.GetPrefs(ctx, "mmuster"); v != "" {
+		t.Fatalf("Prefs leer erwartet: %q", v)
+	}
+	if err := st.SetPrefs(ctx, "mmuster", `{"favorites":["e1"]}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetPrefs(ctx, "mmuster", `{"favorites":["e1","p2"]}`); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := st.GetPrefs(ctx, "mmuster"); v != `{"favorites":["e1","p2"]}` {
+		t.Fatalf("Prefs: %q", v)
+	}
+	if m, _ := st.ListPrefs(ctx); len(m) != 1 {
+		t.Fatalf("ListPrefs: %v", m)
+	}
 	// AD-Abgleich-Plan
 	plan := &SyncPlan{Now: now, Creates: []EmployeeRec{{Username: "jdoe", LastName: "Doe", ADGUID: "g-1", Source: "ad", Active: true, Tags: []int64{}}},
 		Updates: []SyncUpdate{{ID: id, Fields: contactFields{LastName: "Muster", FirstName: "Max", Phone: "999"}, GUID: "g-2", DN: "CN=x", Changed: true}}}
@@ -310,6 +326,9 @@ func exerciseStore(t *testing.T, st Store) {
 	}
 	if err := snap.validate(); err != nil {
 		t.Fatal(err)
+	}
+	if len(snap.Prefs) != 1 {
+		t.Fatalf("Export Prefs: %v", snap.Prefs)
 	}
 	if len(snap.Channels) != 1 || snap.Employees[0].Channel == 0 {
 		t.Fatalf("Export Kontaktwege: %+v", snap.Channels)

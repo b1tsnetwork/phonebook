@@ -34,6 +34,7 @@ type Employee struct {
 	Tags      []int64         `json:"tags"`
 	OrgUnit   int64           `json:"orgUnit,omitempty"`
 	Channel   int64           `json:"channel,omitempty"`
+	Badges    bool            `json:"badges,omitempty"` // Person zeigt ihre Abzeichen
 	Deputies  []int64         `json:"deputies,omitempty"`
 	Absences  []Absence       `json:"absences,omitempty"`
 }
@@ -195,6 +196,7 @@ func empLabel(e *EmployeeRec) string { return fmt.Sprintf("#%d %s, %s", e.ID, e.
 
 func (a *App) meJSON(s *Session) map[string]any {
 	return map[string]any{
+		"prefs":    a.loadPrefs(context.Background(), s.Username).public(),
 		"username": s.Username, "displayName": s.DisplayName, "isAdmin": s.IsAdmin, "source": s.Source,
 		"employeeId": s.EmployeeID, "csrf": s.CSRF,
 		"features": map[string]any{
@@ -208,7 +210,7 @@ func (a *App) meJSON(s *Session) map[string]any {
 // siteJSON: öffentliche Angaben für die Oberfläche (auch ohne Anmeldung)
 func (a *App) siteJSON() map[string]any {
 	out := map[string]any{"publicDirectory": a.cfg.Auth.PublicDirectory, "devAdmin": a.cfg.Auth.DevAdmin, "storage": a.st().Kind(), "offline": a.offline.Load(),
-		"absences": a.absencesMode(), "reports": a.cfg.reportsEnabled()}
+		"absences": a.absencesMode(), "reports": a.cfg.reportsEnabled(), "fun": a.funGlobal(context.Background())}
 	if ro, ok := a.st().(*readOnlyStore); ok && a.offline.Load() {
 		out["offlineSince"] = ro.savedAt // Stand der Kopie
 	}
@@ -238,6 +240,7 @@ func (a *App) handleDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	emps := make([]Employee, 0, len(recs))
+	badgeUsers := a.badgeUsers(ctx)
 	today := a.cfg.today()
 	showAbs := a.absencesMode() == "all" || (a.absencesMode() == "users" && !guest)
 	counts := map[int64]int{}
@@ -245,7 +248,7 @@ func (a *App) handleDirectory(w http.ResponseWriter, r *http.Request) {
 		e := &recs[i]
 		out := Employee{ID: e.ID, Username: e.Username, LastName: e.LastName, FirstName: e.FirstName, Phone: e.Phone, Mobile: e.Mobile,
 			Room: e.Room, Amt: e.Amt, Email: e.Email, Source: e.Source, Active: e.Active, Hidden: e.Hidden, Avatar: e.Avatar, Tags: e.Tags,
-			OrgUnit: e.OrgUnit, Deputies: e.Deputies, Channel: e.Channel}
+			OrgUnit: e.OrgUnit, Deputies: e.Deputies, Channel: e.Channel, Badges: e.Username != "" && badgeUsers[strings.ToLower(e.Username)]}
 		if showAbs {
 			out.Absences = currentAbsences(e.Absences, today)
 		}

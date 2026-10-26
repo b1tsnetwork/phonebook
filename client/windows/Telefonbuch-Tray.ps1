@@ -26,7 +26,7 @@ param(
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$TbVersion = '1.0'
+$TbVersion = '1.1'
 $TbTitle = 'Telefonbuch'   # Seitentitel (<title>) – daran wird ein offenes Fenster erkannt
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -286,6 +286,85 @@ function Show-TbSearch {
   $f.Show()
 }
 
+# ---------------------------------------------------------------- Favoriten (Kurzwahl)
+# Persönlicher Favoriten-Code aus dem Telefonbuch (Menü → ★ Favoriten im Windows-Symbol),
+# gespeichert unter HKCU:\Software\Telefonbuch (FavToken). Der Code erlaubt nur das Lesen der Favoriten.
+
+$script:FavItems = $null
+$script:FavError = ''
+$script:FavLoaded = [DateTime]::MinValue
+
+function Get-TbFavToken {
+  try { return [string](Get-ItemProperty -Path 'HKCU:\Software\Telefonbuch' -Name FavToken -ErrorAction Stop).FavToken } catch { return '' }
+}
+
+function Update-TbFavorites {
+  $tok = Get-TbFavToken
+  if (-not $tok) { $script:FavItems = $null; $script:FavError = ''; return }
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $feed = $Url.TrimEnd('/') + '/api/favorites/feed?t=' + [uri]::EscapeDataString($tok)
+    $r = Invoke-RestMethod -Uri $feed -UseBasicParsing -TimeoutSec 6
+    $script:FavItems = @($r.items)
+    $script:FavError = ''
+    $script:FavLoaded = [DateTime]::Now
+  } catch {
+    $script:FavError = $_.Exception.Message
+  }
+}
+
+function Invoke-TbCall([string]$Number) {
+  $n = ($Number -replace '[^0-9+]', '')
+  if ($n) { Start-Process -FilePath ('tel:' + $n) }
+}
+
+function Connect-TbFavorites {
+  Add-Type -AssemblyName Microsoft.VisualBasic
+  $code = [Microsoft.VisualBasic.Interaction]::InputBox("Bitte den Favoriten-Code aus dem Telefonbuch einfügen`n(Menü → ★ Favoriten im Windows-Symbol → Code erzeugen):", 'Telefonbuch – Favoriten verbinden', '')
+  $code = ([string]$code).Trim()
+  if (-not $code) { return }
+  if ($code -notmatch '^tbf_[A-Za-z0-9_-]{10,90}$') { Show-TbMessage 'Das sieht nicht wie ein Favoriten-Code aus (beginnt mit tbf_).'; return }
+  New-Item -Path 'HKCU:\Software\Telefonbuch' -Force | Out-Null
+  Set-ItemProperty -Path 'HKCU:\Software\Telefonbuch' -Name FavToken -Value $code
+  Update-TbFavorites
+  if ($script:FavError) { Show-TbMessage ('Verbindung fehlgeschlagen: ' + $script:FavError) }
+  else { $script:Tray.ShowBalloonTip(4000, 'Telefonbuch', ('{0} Favorit(en) verbunden – Rechtsklick → ★ Favoriten.' -f @($script:FavItems).Count), [System.Windows.Forms.ToolTipIcon]::Info) }
+}
+
+function Build-TbFavMenu($Parent) {
+  $Parent.DropDownItems.Clear()
+  $add = { param($text, $action, $enabled = $true) $mi = New-Object System.Windows.Forms.ToolStripMenuItem($text); $mi.Enabled = $enabled; if ($action) { $mi.add_Click($action) }; [void]$Parent.DropDownItems.Add($mi); $mi }
+  if (-not (Get-TbFavToken)) {
+    [void](& $add 'Noch nicht verbunden' $null $false)
+  } elseif ($script:FavError -and $null -eq $script:FavItems) {
+    [void](& $add ('Nicht erreichbar: ' + $script:FavError) $null $false)
+  } elseif (@($script:FavItems).Count -eq 0) {
+    [void](& $add 'Keine Favoriten – im Telefonbuch mit ☆ markieren' $null $false)
+  } else {
+    foreach ($f in $script:FavItems) {
+      $num = $f.phone
+      if (-not $num) { $num = $f.viaTel }
+      if (-not $num) { $num = $f.mobile }
+      $label = [string]$f.name
+      if ($f.private) { $label = '🔒 ' + $label }
+      if ($num) { $label += '   ☎ ' + $num }
+      if ($f.away) { $label += '   (abwesend bis ' + ([datetime]$f.away).ToString('dd.MM.') + ')' }
+      $mi = New-Object System.Windows.Forms.ToolStripMenuItem($label)
+      $mi.Tag = [string]$num
+      $mi.ToolTipText = (@($f.amt, $(if ($f.via) { 'bevorzugt: ' + $f.via }), $f.email) | Where-Object { $_ }) -join ' · '
+      if ($num) { $mi.add_Click({ param($s, $e) try { Invoke-TbCall ([string]$s.Tag) } catch { Show-TbMessage $_.Exception.Message } }) } else { $mi.Enabled = $false }
+      [void]$Parent.DropDownItems.Add($mi)
+    }
+  }
+  [void]$Parent.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+  if (Get-TbFavToken) {
+    [void](& $add 'Aktualisieren' { Update-TbFavorites })
+    [void](& $add 'Trennen' { Remove-ItemProperty -Path 'HKCU:\Software\Telefonbuch' -Name FavToken -ErrorAction SilentlyContinue; $script:FavItems = $null })
+  } else {
+    [void](& $add 'Verbinden …' { try { Connect-TbFavorites } catch { Show-TbMessage $_.Exception.Message } })
+  }
+}
+
 # ---------------------------------------------------------------- Autostart (Verknüpfung im Autostart-Ordner)
 
 $script:StartMenuLnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Telefonbuch.lnk'
@@ -333,6 +412,8 @@ $miOpen.Font = New-Object System.Drawing.Font($miOpen.Font, [System.Drawing.Font
 $miOpen.add_Click({ try { Open-Tb '' } catch { Show-TbMessage $_.Exception.Message } })
 $miSearch = New-Object System.Windows.Forms.ToolStripMenuItem('Suchen …')
 $miSearch.add_Click({ try { Show-TbSearch } catch { Show-TbMessage $_.Exception.Message } })
+$miFav = New-Object System.Windows.Forms.ToolStripMenuItem('★ Favoriten')
+[void]$miFav.DropDownItems.Add('…')
 $miAuto = New-Object System.Windows.Forms.ToolStripMenuItem('Mit Windows starten')
 $miAuto.add_Click({
     param($s, $e)
@@ -344,12 +425,15 @@ $miExit = New-Object System.Windows.Forms.ToolStripMenuItem('Beenden')
 $miExit.add_Click({ $script:Tray.Visible = $false; [System.Windows.Forms.Application]::Exit() })
 [void]$menu.Items.Add($miOpen)
 [void]$menu.Items.Add($miSearch)
+[void]$menu.Items.Add($miFav)
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 [void]$menu.Items.Add($miAuto)
 [void]$menu.Items.Add($miInfo)
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 [void]$menu.Items.Add($miExit)
 $menu.add_Opening({
+    if ((Get-TbFavToken) -and ([DateTime]::Now - $script:FavLoaded).TotalMinutes -gt 10) { Update-TbFavorites }
+    Build-TbFavMenu $miFav
     $miAuto.Checked = Test-Path -LiteralPath $script:StartupLnk
     $miAuto.Enabled = (Test-Path -LiteralPath $script:StartMenuLnk) -or $miAuto.Checked
   })
@@ -372,6 +456,13 @@ if ($Welcome) {
 if (-not $Background) {
   try { Open-Tb '' } catch { Show-TbMessage $_.Exception.Message }
 }
+
+# Favoriten im Hintergrund aktuell halten (alle 5 Minuten)
+Update-TbFavorites
+$favTimer = New-Object System.Windows.Forms.Timer
+$favTimer.Interval = 5 * 60 * 1000
+$favTimer.add_Tick({ Update-TbFavorites })
+$favTimer.Start()
 
 try {
   [System.Windows.Forms.Application]::Run()

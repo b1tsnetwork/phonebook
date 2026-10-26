@@ -36,7 +36,7 @@ export const OPTIONS = {
     ['cowboy', 'Cowboyhut'], ['tophat', 'Zylinder'], ['wizard', 'Zauberhut'], ['party', 'Partyhut'], ['santa', 'Nikolausmütze'], ['chef', 'Kochmütze'], ['grad', 'Doktorhut'],
     ['viking', 'Wikingerhelm'], ['helmet', 'Bauhelm'], ['crown', 'Krone'], ['tiara', 'Diadem'], ['flowercrown', 'Blumenkranz'], ['halo', 'Heiligenschein'], ['devil', 'Teufelshörner'],
     ['catears', 'Katzenohren'], ['bunnyears', 'Hasenohren'], ['propeller', 'Propellermütze'], ['headset', 'Headset'], ['headphones', 'Kopfhörer'], ['band', 'Stirnband'],
-    ['bandana', 'Bandana'], ['bow', 'Schleife'], ['flower', 'Blume']],
+    ['bandana', 'Bandana'], ['bow', 'Schleife'], ['flower', 'Blume'], ['pumpkin', 'Kürbis']],
   ears: [['none', 'Flach'], ['small', 'Klein'], ['normal', 'Normal'], ['big', 'Groß'], ['elf', 'Spitz (Elf)']],
   extras: [['blush', 'Rouge'], ['freckles', 'Sommersprossen'], ['mole', 'Leberfleck'], ['beautymark', 'Schönheitsfleck'], ['eyebags', 'Tränensäcke'], ['wrinkles', 'Lachfalten'],
     ['scar', 'Narbe'], ['bandaid', 'Pflaster'], ['facepaint', 'Kriegsbemalung'], ['studs', 'Ohrstecker'], ['hoops', 'Creolen'], ['nosering', 'Nasenpiercing'],
@@ -527,6 +527,13 @@ export function buildTexture(avIn) {
     case 'tophat': { const c = def('#1d1e21'); box(-11, -9.2, -11, 11, -8, 11, c, { amt: 0.04 }); box(-7, -21, -7, 7, -9.2, 7, c, { amt: 0.05 }); box(-7.2, -11.6, -7.2, 7.2, -9.2, 7.2, A === DEFAULT_AVATAR.accent ? '#7d8085' : Ad, { amt: 0.02 }); break; }
     case 'wizard': { const c = def('#4b2c83'); box(-12, -9, -12, 12, -8, 12, c, { amt: 0.05 }); cone(7, -9, (i) => (i === 3 ? '#ffd166' : c), 7.5); box(-1, -24, 2, 1, -22, 4, '#ffd166'); break; }
     case 'party': cone(6, -8, (i) => (i % 2 ? '#ffffff' : A), 5.5); box(-1.4, -22, -1.4, 1.4, -19.6, 1.4, '#ffd166', { amt: 0.08 }); break;
+    case 'pumpkin': { // Halloween
+      const O = '#f28c28', Od = '#d9731a';
+      box(-8.6, -15, -8.6, 8.6, -7.6, 8.6, O, { amt: 0.06 });
+      for (const x of [-4.5, 0, 4.5]) { box(x - 0.6, -14.8, 8.6, x + 0.6, -7.8, 8.9, Od); box(x - 0.6, -14.8, -8.9, x + 0.6, -7.8, -8.6, Od); box(8.6, -14.8, x - 0.6, 8.9, -7.8, x + 0.6, Od); box(-8.9, -14.8, x - 0.6, -8.6, -7.8, x + 0.6, Od); }
+      box(-1, -18, -1, 1, -15, 1, '#4f7a28'); box(1, -17.4, -0.5, 4, -16.4, 0.5, '#6aa33a');
+      break;
+    }
     case 'santa': { box(-9.5, -10, -9.5, 9.5, -7, 9.5, '#f5f5f5', { amt: 0.1 }); cone(5, -10, () => '#d62828', 8); box(4, -14, 5, 8, -10, 9, '#d62828'); box(6.5, -12, 8, 10, -8.5, 11.5, '#f5f5f5', { amt: 0.1 }); break; }
     case 'chef': box(-8.6, -11, -8.6, 8.6, -7.5, 8.6, '#f2f2f2', { amt: 0.03 }); box(-9.5, -18, -9.5, 9.5, -11, 9.5, '#ffffff', { amt: 0.05 }); box(-7, -19.5, -7, 7, -18, 7, '#ffffff', { amt: 0.05 }); break;
     case 'grad': { const c = def('#1d1e21'); box(-8.6, -12, -8.6, 8.6, -7.5, 8.6, c, { amt: 0.03 }); box(-12, -13, -12, 12, -12, 12, c, { amt: 0.03 }); box(-0.6, -13.6, -0.6, 0.6, -13, 0.6, '#ffd166'); box(-0.4, -13, -11.8, 0.4, -12.6, 0, '#ffd166'); box(-0.6, -12.6, -12.4, 0.6, -7, -11.6, '#ffd166', { amt: 0.04 }); break; }

@@ -4,6 +4,7 @@ import { openDialog, confirmDialog, field } from './dialog.js';
 import { openAvatarEditor } from './editor.js';
 import * as A from './avatar.js';
 import { personPicker, amtPicker } from './picker.js';
+import * as F from './fun.js';
 
 // Kategorien kommen vom Server (administrativ pflegbar)
 const catName = (k) => S.catByKey.get(k)?.name || k;
@@ -100,7 +101,18 @@ function guestMe() {
   return { guest: true, username: '', displayName: 'Gast', isAdmin: false, employeeId: 0, csrf: '', features: { storage: S.site.storage, devAdmin: S.site.devAdmin, adLocked: [], maxTags: 0 } };
 }
 
-function setMe(me) { S.me = me || guestMe(); setCSRF(S.me.csrf); }
+function setMe(me) {
+  S.me = me || guestMe();
+  setCSRF(S.me.csrf);
+  S.fav = new Set((S.me.prefs && S.me.prefs.favorites) || []);
+}
+
+// Extras: global freigegeben (Administration) UND persönlich eingeschaltet (Standard: aus)
+function funOn(k) {
+  if (!S.site.fun || S.site.fun[k] === false) return false;
+  if (S.me.guest) { try { return JSON.parse(localStorage.getItem('tb.fun') || '{}')[k] === true; } catch { return false; } }
+  return !!(S.me.prefs && S.me.prefs.fun && S.me.prefs.fun[k]);
+}
 
 function showLogin(msg) {
   $('#main').hidden = true;
@@ -176,8 +188,16 @@ async function reload(keepSel = true) {
   buildTagRows();
   renderHeader();
   computeRoles();
-  $('#viewbar').hidden = !(S.org.units.length || S.me.isAdmin);
-  if ($('#viewbar').hidden && S.view === 'org') setView('list');
+  const hasOrg = S.org.units.length > 0 || S.me.isAdmin;
+  $('#vb-org').hidden = !hasOrg;
+  $('#vb-village').hidden = !(hasOrg && funOn('village'));
+  $('#fav-only').hidden = !!S.me.guest;
+  $('#viewbar').hidden = !hasOrg && S.me.guest;
+  if ((S.view === 'org' && !hasOrg) || (S.view === 'village' && $('#vb-village').hidden)) setView('list');
+  if (S.me.guest) S.favOnly = false;
+  $('#fav-only').classList.toggle('active', !!S.favOnly);
+  document.body.classList.toggle('upside', funOn('seasonal') && F.isAprilFools(S.today));
+  F.setup({ S, A, h, $, api, toast, openDialog, goPerson, orgGo, avatarURL, viewAvatar, unitLabel, unitPath, unitMembers, unitLeads, unitLevel, personContact, contactSummary, nameOf, fmtDay, absNow, setView, update, funOn, catName, catColor });
   update();
 }
 
@@ -217,8 +237,13 @@ function bindUI() {
   $('#sort-sel').addEventListener('change', () => { S.sort = { key: $('#sort-sel').value, dir: S.sort.dir }; sortRows(); update(); });
   $('#sort-dir').addEventListener('click', () => { S.sort = { key: S.sort.key, dir: -S.sort.dir }; sortRows(); update(); });
   $$('#mtabs button').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
-  $$('#viewbar button').forEach((b) => b.addEventListener('click', () => { setView(b.dataset.view); update(); }));
-  try { if (localStorage.getItem('tb.view') === 'org') setView('org'); } catch { /* egal */ }
+  $$('#viewbar button[data-view]').forEach((b) => b.addEventListener('click', () => { setView(b.dataset.view); update(); }));
+  $('#fav-only').addEventListener('click', () => { S.favOnly = !S.favOnly; $('#fav-only').classList.toggle('active', S.favOnly); $('#fav-only').setAttribute('aria-pressed', S.favOnly ? 'true' : 'false'); update(); });
+  document.addEventListener('keydown', (e) => {
+    // ^ (deutsche Tastatur: Tottaste, code „Backquote“) öffnet das Terminal
+    if ((e.code === 'Backquote' || e.key === '^') && !e.ctrlKey && !e.altKey && !e.metaKey && funOn('terminal') && !$('#dlg').open && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) { e.preventDefault(); F.openTerminal(); }
+  });
+  try { const v = localStorage.getItem('tb.view'); if (v === 'org' || v === 'village') setView(v); } catch { /* egal */ }
   setTab('people');
   $('#user-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(); });
   $('#help-btn').addEventListener('click', () => helpDialog());
@@ -247,8 +272,10 @@ function resetAll(clearTagSearch) {
 
 function avatarURL(p, size) {
   if (p.kind !== 'emp') return A.thumbURL({ ...A.DEFAULT_AVATAR, skin: '#c8cbd0', hair: '#9aa0a6', mouthStyle: 'neutral' }, size);
-  return A.thumbURL(p.avatar || A.DEFAULT_AVATAR, size);
+  return A.thumbURL(viewAvatar(p.avatar || A.DEFAULT_AVATAR), size);
 }
+// Avatar für die Anzeige (ggf. saisonal verkleidet)
+const viewAvatar = (av) => (funOn('seasonal') ? F.seasonalAvatar(av, S.today) : av);
 
 // ---------- Linke Liste ----------
 
@@ -264,6 +291,7 @@ function buildRows() {
     const cell = (cls, lbl, title, val, content) => h('div', { class: cls + (val ? '' : ' novalue'), title: title || null }, h('span', { class: 'lbl', 'aria-hidden': 'true' }, lbl), content);
     const badges = [];
     badges.push(...privBadges(p, true));
+    if (S.fav && S.fav.has(p.key)) badges.unshift(h('span', { class: 'fav-star', title: 'Favorit' }, '★'));
     if (p.self) badges.push(h('span', { class: 'badge self' }, 'ich'));
     const pref = p.kind === 'emp' ? personContact(p) : null;
     if (pref) badges.push(h('span', { class: 'badge via', title: `Bitte bevorzugt: ${contactSummary(pref.contact)} (${pref.channel.name})` }, pref.contact.ticketUrl ? '🎫' : pref.contact.email ? '✉' : '☎'));
@@ -308,7 +336,8 @@ function sortVal(p, k) {
 }
 function sortRows() {
   const { key, dir } = S.sort;
-  const sorted = [...S.people].sort((a, b) => dir * collator.compare(sortVal(a, key), sortVal(b, key)) || collator.compare(a.display, b.display));
+  const fav = (p) => (S.fav && S.fav.has(p.key) ? 0 : 1); // Favoriten immer oben
+  const sorted = [...S.people].sort((a, b) => fav(a) - fav(b) || dir * collator.compare(sortVal(a, key), sortVal(b, key)) || collator.compare(a.display, b.display));
   const list = $('#people');
   for (const p of sorted) list.append(S.rows.get(p.key));
   $('#sort-sel').value = key;
@@ -320,6 +349,7 @@ function sortRows() {
 }
 
 function matchPerson(p, qMain, qRoom, qAmt) {
+  if (S.favOnly && !S.fav.has(p.key)) return false;
   if (p.kind === 'emp' && (!p.active || p.hidden) && !S.showHidden) return false;
   for (const t of qMain) {
     const d = digits(t);
@@ -359,6 +389,7 @@ function update() {
   renderCard();
   renderTags();
   if (S.view === 'org') renderOrg();
+  if (S.view === 'village') F.renderVillage();
 }
 
 // Mobil: Personen und Schlagworte als Reiter
@@ -435,7 +466,7 @@ function renderCard() {
   }
   const p = S.byKey.get([...S.selPeople][0]);
   const cv = h('canvas', { class: 'card-av', width: 96, height: 96, title: p.kind === 'emp' && (p.self || S.me.isAdmin) ? 'Avatar bearbeiten' : '' });
-  const av = p.kind !== 'emp' ? null : (p.avatar || A.DEFAULT_AVATAR);
+  const av = p.kind !== 'emp' ? null : viewAvatar(p.avatar || A.DEFAULT_AVATAR);
   if (av) {
     const t0 = performance.now();
     const anim = () => { if (!document.body.contains(cv)) return; A.drawHead(cv, av, { yaw: -28 + Math.sin((performance.now() - t0) / 1500) * 22, pitch: 16, fit: true }); cardAnim = requestAnimationFrame(anim); };
@@ -446,6 +477,10 @@ function renderCard() {
   const btns = [];
   const isEmp = p.kind === 'emp';
   const own = isEmp && (p.self || S.me.isAdmin);
+  if (!S.me.guest && p.kind !== 'shared') {
+    const on = S.fav.has(p.key);
+    btns.push(h('button', { type: 'button', class: 'fav-btn' + (on ? ' on' : ''), title: on ? 'Aus den Favoriten entfernen' : 'Zu den Favoriten (Kurzwahl, max. 10)', onclick: () => toggleFav(p) }, on ? '★ Favorit' : '☆ Favorit'));
+  }
   if (canEditTags(p)) btns.push(h('button', { type: 'button', class: 'primary', onclick: () => editTags(p) }, p.self ? '🏷 Meine Schlagworte' : '🏷 Schlagworte'));
   if (p.kind === 'emp' && (p.self || S.me.isAdmin)) btns.push(h('button', { type: 'button', onclick: () => editAvatar(p) }, '🙂 Avatar'));
   if (canEditPerson(p)) btns.push(h('button', { type: 'button', onclick: () => editPerson(p) }, p.kind === 'priv' ? '✏️ Bearbeiten' : '✏️ Stammdaten'));
@@ -460,7 +495,8 @@ function renderCard() {
         ...privBadges(p, false),
         p.source === 'ad' ? h('span', { class: 'badge ad', title: 'Stammdaten kommen aus dem Active Directory' }, 'AD') : null,
         p.self ? h('span', { class: 'badge self' }, 'das bist du') : null,
-        ...(isEmp ? personRoles(p).map((r) => h('span', { class: 'badge role', title: r.title }, r.label)) : []))));
+        ...(isEmp ? personRoles(p).map((r) => h('span', { class: 'badge role', title: r.title }, r.label)) : [])),
+      isEmp && p.badges && S.site.fun && S.site.fun.badges !== false ? F.badgeRow(p) : null));
   const pref = isEmp ? personContact(p) : null;
   const direct = [line('☎', 'Telefon', p.phone, telHref(p.phone)), line('📱', 'Mobil', p.mobile, telHref(p.mobile))].filter(Boolean);
   card.replaceChildren(h('div', { class: 'card' }, head,
@@ -572,6 +608,10 @@ function toggleMenu() {
   ];
   if (S.site.absences !== 'off') items.push(item('🏖 Meine Abwesenheit', () => editAbsences(me), { disabled: !me }));
   if (S.site.reports !== false) items.push(item('🚩 Meine Meldungen', myReportsDialog));
+  items.push(item('★ Favoriten im Windows-Symbol …', feedDialog));
+  if (funOn('quiz')) items.push(item('🎯 Wer ist das? (Quiz)', () => F.openQuiz()));
+  if (funOn('terminal')) items.push(item('⌨ Terminal  ( ^ )', () => F.openTerminal()));
+  items.push(item('🎮 Extras …', extrasDialog));
   if (S.me.isAdmin) {
     items.push(h('div', { class: 'menu-sep' }, 'Verwaltung'),
       item('👤 Neuen Eintrag anlegen', () => editPerson(null, 'emp')),
@@ -579,6 +619,7 @@ function toggleMenu() {
       item('🗂 Kategorien verwalten', categoryManager),
       item('🏢 Organisation verwalten', orgManager),
       item('💬 Kontaktwege verwalten', channelManager),
+      item('📊 Datenqualität', qualityDialog),
       ...(S.site.reports !== false ? [item(`🚩 Meldungen${S.openReports ? ' (' + S.openReports + ' offen)' : ''}`, reportsDialog)] : []),
       item('🔄 AD-Abgleich', syncDialog),
       item('💾 Datenhaltung', storageDialog),
@@ -634,7 +675,7 @@ function helpDialog() {
       'Kategorien verwalten: anlegen, umbenennen, Farbe und Reihenfolge ändern, löschen (die Schlagworte wandern in eine Folge-Kategorie).',
       'Avatar-Editor: Avatare kopieren/einfügen, von anderen Einträgen übernehmen, auf mehrere Einträge übertragen; „■ Block“ für einfarbige Einrichtungs-Einträge.',
       'Datenhaltung: MySQL oder JSON-Datei, Übernahme aus MySQL, JSON-Kopie.') : null);
-  openDialog({ title: 'Hilfe', body, buttons: ['spacer', { label: 'Schließen', cls: 'primary' }] });
+  openDialog({ title: 'Hilfe', body, buttons: [{ label: '🎮 Extras …', onClick: () => { extrasDialog(); return false; } }, 'spacer', { label: 'Schließen', cls: 'primary' }] });
 }
 
 function clientDialog() {
@@ -947,10 +988,11 @@ function deleteCategory(c) {
 // ---------- Ansicht: Liste / Organigramm ----------
 
 function setView(v) {
-  S.view = v === 'org' ? 'org' : 'list';
-  $('#main').classList.toggle('view-org', S.view === 'org');
-  $$('#viewbar button').forEach((b) => b.classList.toggle('active', b.dataset.view === S.view));
+  S.view = ['org', 'village'].includes(v) ? v : 'list';
+  $('#main').classList.toggle('view-org', S.view !== 'list');
+  $$('#viewbar button[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === S.view));
   $('#orgview').hidden = S.view !== 'org';
+  $('#village').hidden = S.view !== 'village';
   try { localStorage.setItem('tb.view', S.view); } catch { /* egal */ }
 }
 
@@ -1560,6 +1602,154 @@ function membersDialog(u, fromManager) {
   setTimeout(() => pp.focus(), 30);
 }
 
+// ---------- Favoriten ----------
+
+async function saveFavorites(list) {
+  try {
+    const r = await api('PUT', '/api/me/prefs', { favorites: list });
+    S.me.prefs = r.prefs;
+    S.fav = new Set(r.prefs.favorites);
+  } catch (e) { toast(e.message, 'err'); }
+  buildRows();
+  update();
+}
+
+function toggleFav(p) {
+  const list = [...S.fav];
+  if (S.fav.has(p.key)) list.splice(list.indexOf(p.key), 1);
+  else {
+    if (list.length >= 10) { toast('Höchstens 10 Favoriten – bitte erst einen entfernen', 'err'); return; }
+    list.push(p.key);
+  }
+  saveFavorites(list);
+}
+
+async function feedDialog() {
+  const box = h('div', { class: 'admin' });
+  const render = (token) => {
+    const has = token || (S.me.prefs && S.me.prefs.hasFeed);
+    box.replaceChildren(
+      h('p', null, 'Deine Favoriten (', h('b', null, String(S.fav.size)), ') können im Windows-Symbol unten rechts als Kurzwahl erscheinen: Rechtsklick → ★ Favoriten → Name anklicken, und es wird gewählt.'),
+      h('ol', null,
+        h('li', null, 'Hier einen persönlichen Code erzeugen und kopieren.'),
+        h('li', null, 'Im Windows-Symbol: Rechtsklick → ★ Favoriten → „Verbinden …“ → Code einfügen.')),
+      token ? h('div', { class: 'feed-code' }, h('code', null, token), h('button', { type: 'button', class: 'primary', onclick: () => copyText(token, 'Code kopiert') }, '⧉ Kopieren')) : null,
+      token ? h('p', { class: 'hint' }, 'Der Code wird nur jetzt angezeigt. Er erlaubt nur das Lesen deiner Favoriten – behandle ihn trotzdem wie ein Passwort.') : null,
+      has && !token ? h('p', { class: 'hint' }, '✅ Ein Code ist eingerichtet. Ein neuer Code macht den alten ungültig.') : null);
+  };
+  render(null);
+  openDialog({
+    title: '★ Favoriten im Windows-Symbol', body: box,
+    buttons: [
+      ...(S.me.prefs && S.me.prefs.hasFeed ? [{ label: 'Code widerrufen', cls: 'danger', onClick: async () => {
+        try { await api('DELETE', '/api/me/feed-token'); S.me.prefs.hasFeed = false; toast('Code widerrufen', 'ok'); } catch (e) { toast(e.message, 'err'); }
+      } }] : []),
+      'spacer', { label: 'Schließen' },
+      { label: 'Code erzeugen', cls: 'primary', onClick: async () => {
+        try { const r = await api('POST', '/api/me/feed-token', {}); S.me.prefs.hasFeed = true; render(r.token); } catch (e) { toast(e.message, 'err'); }
+        return false;
+      } }],
+  });
+}
+
+// ---------- Extras (persönlich + Freigabe durch die Administration) ----------
+
+const FUN = [
+  ['village', '🏘 Organigramm als Voxel-Dorf', 'Jede Einheit ist ein kleines Pixel-Haus, davor stehen die Köpfe. Klick aufs Haus öffnet die Einheit.'],
+  ['quiz', '🎯 „Wer ist das?“-Quiz', 'Avatar und Schlagworte werden gezeigt – du rätst den Namen. Ideal zum Kennenlernen.'],
+  ['terminal', '⌨ Terminal-Modus', 'Mit ^ öffnet sich eine Konsole: whois, finger, grep, ping, ls, cd … inklusive ASCII-Avatar.'],
+  ['seasonal', '🎃 Saisonale Avatare', 'Im Dezember Nikolausmützen, an Halloween Kürbisse, am 1. April steht alles Kopf.'],
+  ['badges', '🏅 Meine Abzeichen zeigen', 'Zeigt auf deiner Visitenkarte Abzeichen wie „Profil vollständig“ oder „Ersthelfer“. Keine Rangliste.'],
+];
+
+function extrasDialog() {
+  const global = { ...(S.site.fun || {}) };
+  let mine = {};
+  if (S.me.guest) { try { mine = JSON.parse(localStorage.getItem('tb.fun') || '{}'); } catch { mine = {}; } }
+  else mine = { ...((S.me.prefs && S.me.prefs.fun) || {}) };
+  const rows = FUN.map(([k, label, desc]) => {
+    const avail = global[k] !== false;
+    const cb = h('input', { type: 'checkbox', checked: mine[k] ? true : null, disabled: avail && !(k === 'badges' && S.me.guest) ? null : true, onchange: (e) => { mine[k] = e.target.checked; } });
+    return h('label', { class: 'fun-row' + (avail ? '' : ' off') }, cb, h('span', null, h('b', null, label), h('small', { class: 'muted' }, avail ? desc : 'Von der Administration abgeschaltet.' ), k === 'badges' && S.me.guest ? h('small', { class: 'muted' }, ' (nach der Anmeldung)') : null));
+  });
+  const adminRows = S.me.isAdmin ? FUN.map(([k, label]) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: global[k] !== false ? true : null, onchange: (e) => { global[k] = e.target.checked; } }), ' ', label)) : [];
+  openDialog({
+    title: '🎮 Extras', wide: true,
+    body: h('div', { class: 'admin' },
+      h('p', { class: 'hint' }, 'Kleine Spielereien – standardmäßig aus. Schalte ein, was dir Spaß macht. Die Einstellung gilt nur für dich' + (S.me.guest ? ' (in diesem Browser).' : '.')),
+      h('div', { class: 'fun-list' }, rows),
+      S.me.isAdmin ? h('div', null, h('h4', null, 'Für alle freigeben (Administration)'), h('p', { class: 'hint' }, 'Abgeschaltete Extras stehen niemandem zur Verfügung – auch nicht, wer sie persönlich eingeschaltet hat.'), h('div', { class: 'fun-admin' }, adminRows)) : null),
+    buttons: ['spacer', { label: 'Abbrechen' }, { label: 'Speichern', cls: 'primary', onClick: async () => {
+      try {
+        if (S.me.isAdmin) await api('PUT', '/api/admin/fun', Object.fromEntries(FUN.map(([k]) => [k, global[k] !== false])));
+        if (S.me.guest) { try { localStorage.setItem('tb.fun', JSON.stringify(mine)); } catch { /* egal */ } }
+        else { const r = await api('PUT', '/api/me/prefs', { fun: Object.fromEntries(FUN.map(([k]) => [k, !!mine[k]])) }); S.me.prefs = r.prefs; }
+        try { S.site = await api('GET', '/api/site'); } catch { /* egal */ }
+        toast('Gespeichert', 'ok');
+        await reload();
+      } catch (e) { toast(e.message, 'err'); return false; }
+    } }],
+  });
+}
+
+// ---------- Admin: Datenqualität ----------
+
+async function qualityDialog() {
+  await reload();
+  let reports = [];
+  try { reports = (await api('GET', '/api/admin/reports?status=open')).reports; } catch { /* egal */ }
+  const emps = S.people.filter((p) => p.kind === 'emp' && p.active && !p.hidden);
+  const inact = S.people.filter((p) => p.kind === 'emp' && (!p.active || p.hidden));
+  const dupPhones = new Map();
+  for (const p of emps) if (p.idxPhone) { if (!dupPhones.has(p.idxPhone)) dupPhones.set(p.idxPhone, []); dupPhones.get(p.idxPhone).push(p); }
+  const ageDays = (d) => Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
+  const units = S.org.units;
+  const checks = [
+    ['☎', 'ohne Telefon', emps.filter((p) => !p.phone && !personContact(p))],
+    ['🚪', 'ohne Raum', emps.filter((p) => !p.room)],
+    ['✉', 'ohne E-Mail', emps.filter((p) => !p.email)],
+    ['🏛', 'ohne Amt (Text)', emps.filter((p) => !p.amt)],
+    ...(units.length ? [['🏢', 'ohne Organisationseinheit', emps.filter((p) => !S.unitById.has(p.orgUnit))]] : []),
+    ['🔁', 'doppelte Durchwahl', [...dupPhones.values()].filter((l) => l.length > 1).flat()],
+    ['🔑', 'ohne verknüpftes Konto (können nichts selbst pflegen)', emps.filter((p) => !p.username && p.source === 'manual' && (p.firstName || '').length)],
+    ['🏷', 'ohne Schlagworte', emps.filter((p) => !p.tags.length)],
+    ['👥', 'ohne Vertretung', emps.filter((p) => !(p.deputies || []).length)],
+    ['💤', 'inaktiv oder ausgeblendet', inact],
+  ];
+  const unitRows = units.length ? [
+    ['★', 'Einheiten ohne Leitung', units.filter((u) => !unitLeads(u).leaders.length)],
+    ['∅', 'Einheiten ohne Personen (inkl. Untereinheiten)', units.filter((u) => !unitMembers(u.id, true).length)],
+  ] : [];
+  const oldReports = reports.filter((r) => ageDays(r.createdAt) >= 14);
+  const detail = h('div', { class: 'dq-detail' });
+  const showPeople = (title, list) => {
+    detail.replaceChildren(h('h4', null, `${title} (${list.length})`), list.length ? h('div', { class: 'dq-list' }, list.slice(0, 300).map((p) => h('div', { class: 'dq-item' },
+      h('button', { type: 'button', class: 'plink', onclick: () => { $('#dlg').close(); goPerson(p.key); } }, h('img', { src: avatarURL(p, 20), alt: '', width: 20, height: 20 }), p.display),
+      h('span', { class: 'muted' }, [p.amt, p.phone].filter(Boolean).join(' · ')),
+      h('button', { type: 'button', class: 'icon', title: 'Stammdaten bearbeiten', onclick: () => editPerson(p) }, '✏️')))) : h('p', { class: 'muted' }, 'Alles in Ordnung. 🎉'));
+  };
+  const showUnits = (title, list) => {
+    detail.replaceChildren(h('h4', null, `${title} (${list.length})`), h('div', { class: 'dq-list' }, list.map((u) => h('div', { class: 'dq-item' },
+      h('button', { type: 'button', class: 'linkish', onclick: () => { $('#dlg').close(); setView('org'); orgGo(u.id); } }, unitPath(u).map((x) => x.short || x.name).join(' › ') + ' – ' + u.name),
+      h('button', { type: 'button', class: 'icon', title: 'Bearbeiten', onclick: () => unitDialog(u) }, '✏️')))));
+  };
+  const card = (icon, label, n, total, onclick, warn) => h('button', { type: 'button', class: 'dq-card' + (n ? (warn ? ' warn' : ' todo') : ' ok'), onclick },
+    h('span', { class: 'dq-n' }, String(n)), h('span', null, icon, ' ', label), total ? h('span', { class: 'dq-bar' }, h('span', { style: { width: Math.round(100 * (total - n) / total) + '%' } })) : null);
+  const complete = emps.filter((p) => p.phone && p.room && p.email && p.amt).length;
+  openDialog({
+    title: '📊 Datenqualität', wide: true,
+    body: h('div', { class: 'admin' },
+      h('p', null, h('b', null, `${emps.length} aktive Einträge`), ` – davon ${complete} mit Telefon, Raum, E-Mail und Amt (${emps.length ? Math.round(100 * complete / emps.length) : 0} %).`),
+      h('div', { class: 'dq-grid' },
+        ...checks.map(([i, l, list]) => card(i, l, list.length, i === '💤' ? 0 : emps.length, () => showPeople(l, list), false)),
+        ...unitRows.map(([i, l, list]) => card(i, l, list.length, 0, () => showUnits(l, list), false)),
+        card('🚩', 'offene Meldungen', reports.length, 0, () => reportsDialog('open'), false),
+        card('⏰', 'Meldungen älter als 14 Tage', oldReports.length, 0, () => reportsDialog('open'), true)),
+      detail),
+    buttons: ['spacer', { label: 'Schließen', cls: 'primary' }],
+  });
+}
+
 // ---------- Zwischenablage ----------
 
 async function copyText(text, msg) {
@@ -1770,7 +1960,7 @@ async function storageDialog() {
 async function auditDialog() {
   const q = h('input', { type: 'search', placeholder: 'Suchen (Benutzer, Aktion, Eintrag …)' });
   const tbody = h('tbody');
-  const ACT = { mysql_import: 'Übernahme aus MySQL', login: 'Anmeldung', login_failed: 'Anmeldung fehlgeschlagen', tags_update: 'Schlagworte geändert', avatar_update: 'Avatar geändert', employee_create: 'Eintrag angelegt', employee_update: 'Stammdaten geändert', employee_delete: 'Eintrag gelöscht', tag_create: 'Schlagwort angelegt', tag_update: 'Schlagwort geändert', tag_merge: 'Schlagworte zusammengeführt', tag_delete: 'Schlagwort gelöscht', tag_cleanup: 'Unbenutzte Schlagworte gelöscht', ad_sync: 'AD-Abgleich', category_create: 'Kategorie angelegt', category_update: 'Kategorie geändert', category_delete: 'Kategorie gelöscht', storage_online: 'Datenbank wieder erreichbar', deputies_update: 'Vertretung geändert', absences_update: 'Abwesenheit geändert', report_create: 'Fehler gemeldet', report_done: 'Meldung erledigt', report_rejected: 'Meldung abgelehnt', report_open: 'Meldung wieder geöffnet', org_levels: 'Ebenen geändert', org_unit_create: 'Einheit angelegt', org_unit_update: 'Einheit geändert', org_unit_delete: 'Einheit gelöscht', org_members: 'Einheit: Zuordnung', org_assign: 'Organisation zugeordnet', channel_create: 'Kontaktweg angelegt', channel_update: 'Kontaktweg geändert', channel_delete: 'Kontaktweg gelöscht', channel_members: 'Kontaktweg zugewiesen', org_auto_assign: 'Automatische Zuordnung', reports_powershell: 'PowerShell-Skript erzeugt', reports_autoclose: 'Meldungen automatisch erledigt' };
+  const ACT = { mysql_import: 'Übernahme aus MySQL', login: 'Anmeldung', login_failed: 'Anmeldung fehlgeschlagen', tags_update: 'Schlagworte geändert', avatar_update: 'Avatar geändert', employee_create: 'Eintrag angelegt', employee_update: 'Stammdaten geändert', employee_delete: 'Eintrag gelöscht', tag_create: 'Schlagwort angelegt', tag_update: 'Schlagwort geändert', tag_merge: 'Schlagworte zusammengeführt', tag_delete: 'Schlagwort gelöscht', tag_cleanup: 'Unbenutzte Schlagworte gelöscht', ad_sync: 'AD-Abgleich', category_create: 'Kategorie angelegt', category_update: 'Kategorie geändert', category_delete: 'Kategorie gelöscht', storage_online: 'Datenbank wieder erreichbar', deputies_update: 'Vertretung geändert', absences_update: 'Abwesenheit geändert', report_create: 'Fehler gemeldet', report_done: 'Meldung erledigt', report_rejected: 'Meldung abgelehnt', report_open: 'Meldung wieder geöffnet', org_levels: 'Ebenen geändert', org_unit_create: 'Einheit angelegt', org_unit_update: 'Einheit geändert', org_unit_delete: 'Einheit gelöscht', org_members: 'Einheit: Zuordnung', org_assign: 'Organisation zugeordnet', channel_create: 'Kontaktweg angelegt', channel_update: 'Kontaktweg geändert', channel_delete: 'Kontaktweg gelöscht', channel_members: 'Kontaktweg zugewiesen', feed_token: 'Favoriten-Code', fun_settings: 'Extras geändert', org_auto_assign: 'Automatische Zuordnung', reports_powershell: 'PowerShell-Skript erzeugt', reports_autoclose: 'Meldungen automatisch erledigt' };
   const load = async () => {
     try {
       const r = await api('GET', '/api/admin/audit?limit=500&q=' + encodeURIComponent(q.value));

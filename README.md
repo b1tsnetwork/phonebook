@@ -66,6 +66,23 @@ Allgemein sichtbare Einträge können nur Administratoren anlegen.
 - **Übernahme ins AD (teilautomatisiert):** Das Telefonbuch schreibt bewusst **nicht** selbst ins AD; das Dienstkonto bleibt nur lesend. Für Meldungen zu AD-Einträgen erzeugt es aber fertige, geprüfte **PowerShell-Befehle**, z. B. `Set-ADUser -Identity '<objectGUID>' -Server 'dc01…' -Replace @{'telephoneNumber'='0123 456-999'}`. Die Attributnamen kommen aus `ldap.attributes`, Werte werden sicher in Anführungszeichen gesetzt, und Vorschläge, die nicht zum Feld passen, werden nicht übernommen. Pro Meldung gibt es „⧉ PowerShell“ zum Kopieren, für alle offenen zusammen ein **Skript** (kopieren oder als `.ps1` speichern). Es startet als Probelauf (`$WhatIfPreference = $true`). „-“ als Vorschlag leert ein Feld, Namen bitte als „Nachname, Vorname“ melden.
 - **Automatisch erledigt:** Nach jedem AD-Abgleich und nach dem Speichern von Stammdaten werden offene Meldungen, deren Vorschlag jetzt im Eintrag steht, automatisch als erledigt markiert, mit Hinweis für die meldende Person. Von Hand geht das mit „✓ Übernommene erledigen“.
 
+**Favoriten (Kurzwahl)**
+- Angemeldete markieren bis zu **10 Favoriten** mit ☆ auf der Visitenkarte, also Einträge und eigene private Kontakte. Favoriten stehen in der Liste immer oben (★), und **★ Favoriten** oben links zeigt nur sie. Gespeichert wird serverseitig, die Favoriten gelten also auf jedem Rechner.
+- **Im Windows-Symbol:** *Menü → ★ Favoriten im Windows-Symbol → Code erzeugen*, dann im Symbol *Rechtsklick → ★ Favoriten → Verbinden …* und den Code einfügen. Danach erscheinen die Favoriten im Tray-Menü. Ein Klick wählt die Nummer über `tel:` (Softphone/Teams); bei einem bevorzugten Kontaktweg mit „Durchwahl zurückhaltend“ wird die Hotline gewählt.
+- Der Code erlaubt nur das Lesen der eigenen Favoriten. Er wird nur als Hash gespeichert, ist widerrufbar, und Fehlversuche zählen zur Sperre je IP.
+
+**📊 Datenqualität** (Admin)
+- Eine Übersicht mit Zählern und Fortschrittsbalken. Erfasst werden Einträge ohne Telefon, Raum, E-Mail, Amt oder Organisationseinheit, doppelte Durchwahlen, Einträge ohne verknüpftes Konto, ohne Schlagworte oder ohne Vertretung, inaktive bzw. ausgeblendete Einträge, Einheiten ohne Leitung oder ohne Personen sowie offene Meldungen und **Meldungen älter als 14 Tage**.
+- Ein Klick auf eine Kachel zeigt die betroffenen Einträge, jeweils mit Sprung zur Visitenkarte und ✏️ zu den Stammdaten.
+
+**🎮 Extras** (Spaß – standardmäßig **aus**)
+- Jede Person schaltet die Extras unter *Menü → 🎮 Extras* für sich ein; Gäste über die Hilfe, dann gilt es für diesen Browser. Administratoren können jedes Extra im selben Dialog **für alle abschalten**, dann steht es niemandem zur Verfügung.
+- **🏘 Voxel-Dorf:** Das Organigramm als Dorf. Jede Einheit ist ein kleines Pixel-Haus, mehr Personen bedeuten mehr Stockwerke, die Köpfe stehen davor. Klick aufs Haus geht eine Ebene tiefer, auf der untersten Ebene stehen alle auf dem Marktplatz.
+- **🎯 „Wer ist das?“:** 10 Runden. Avatar und Schlagworte werden gezeigt, gesucht ist der Name. Falsche Antworten kommen gern aus demselben Amt. Ein Tipp (Amt) kostet einen halben Punkt. Es werden keine Ergebnisse gespeichert.
+- **⌨ Terminal:** Öffnet sich mit `^` (oder über das Menü). Befehle: `whois`, `finger`, `grep`, `ping`, `ls`, `cd`, `tree`, `open`, `whoami`, `date`, `uptime`, `fortune`, `cowsay`, `man`, `clear`, `exit`, dazu ein paar Easter Eggs (`sudo`, `rm`). `whois` zeigt einen ASCII-Avatar in Farbe, `ping` die Erreichbarkeit samt Abwesenheit und Vertretung. Tab ergänzt Befehle, ↑↓ blättert im Verlauf.
+- **🎃 Saisonale Avatare:** 1.–26. Dezember Nikolausmütze, Silvester/Neujahr Partyhut, letzte Oktoberwoche Kürbis, am 1. April steht alles Kopf. Das betrifft nur die Anzeige, gespeicherte Avatare bleiben unverändert, und einfarbige Einrichtungs-Blöcke bleiben unberührt.
+- **🏅 Abzeichen:** Wer das für sich einschaltet, zeigt auf der eigenen Visitenkarte Abzeichen wie *Profil vollständig*, *Pixelkünstler:in*, *Ersthelfer:in*, *Brandschutzhelfer:in*, *Mehrsprachig*, *Ausbilder:in*, *Gut vertreten* oder *Schlagwort-Sammler:in*. Sie werden aus den vorhandenen Daten berechnet. Es gibt keine Rangliste und keine Statistik.
+
 **Avatar-Editor** (Menü → *Mein Avatar*, oder Klick auf den eigenen Avatar)
 - Der Kopf hat **16×16 Pixel je Seite** (Version 2, vorher 8×8), dazu eine Überzug-Ebene und Aufbauten wie Hutkrempe, Dutt, Zöpfe, Ohren und Kopfhörer. Er wird in 3D gezeichnet und lässt sich mit der Maus drehen. Alte Avatare werden automatisch übernommen, gemalte Pixel dabei auf 16×16 vergrößert.
 - **Standard ist neutral grau.** Damit gibt es keine Vorgabe zu Geschlecht oder Hautfarbe. Grautöne, Hauttöne, Fantasiefarben und eine freie Farbe stehen zur Auswahl.
@@ -254,6 +271,7 @@ Der Server läuft zentral (Docker). Auf den Windows-Clients sorgt ein kleines Sy
 
 - **Klick:** Das Telefonbuch öffnet sich in einem **eigenen Fenster** (Edge/Chrome im App-Modus, ohne Adressleiste). Ist es schon offen, wird es nach vorne geholt.
 - **Rechtsklick → „Suchen …“:** Ein kleines Suchfeld unten rechts. Mit `Enter` wird gesucht. Ein schon offenes Telefonbuch-Fenster übernimmt die Suche, es entsteht kein zweites Fenster.
+- **Rechtsklick → ★ Favoriten:** die persönliche Kurzwahl, ein Klick wählt (siehe „Favoriten“). Einmalig mit dem Favoriten-Code verbinden.
 - **Rechtsklick → „Mit Windows starten“** schaltet den Autostart um, „Beenden“ schließt das Symbol.
 - Ein Start über das Startmenü öffnet das Telefonbuch. Läuft das Symbol schon, wird kein zweites angelegt.
 
@@ -319,6 +337,7 @@ adsync.go      AD-Abgleich
 api.go         REST-API: Verzeichnis, Schlagworte, Stammdaten, private Kontakte, Protokoll
 features.go    Vertretungen, Abwesenheiten, Organigramm (Ebenen/Einheiten), Fehlermeldungen
 channels.go    Kontaktwege (Ticketsystem/Postfach/Hotline), gezielte Zuweisung
+prefs.go       persönliche Einstellungen: Favoriten, Favoriten-Code, Extras
 adtools.go     Meldungen → PowerShell (Set-ADUser), automatisches Erledigen
 orgmatch.go    Massenzuweisung: Amt-Text → Organisationseinheit
 avatar.go      Prüfung der Avatar-Daten
@@ -330,6 +349,7 @@ web/           Frontend (index.html, css/app.css, js/*.js)
   js/editor.js   Avatar-Editor
   js/app.js      Zwei-Listen-Ansicht, Dialoge, Verwaltung (Kategorien, Freigaben)
   js/picker.js   Auswahl von Personen (Avatar + Name) und Ämtern
+  js/fun.js      Extras: Voxel-Dorf, Quiz, Terminal, saisonale Avatare, Abzeichen
 ```
 
 ### API (Auszug)
@@ -348,6 +368,9 @@ web/           Frontend (index.html, css/app.css, js/*.js)
 | `GET /api/admin/reports`, `PUT /api/admin/reports/{id}`, `GET /api/admin/reports/powershell`, `POST /api/admin/reports/autoclose` | Admin |
 | `GET /api/org/suggest`, `POST /api/org/assign`, `PUT /api/org/auto-assign` | Admin |
 | `POST /api/channels`, `PUT/DELETE /api/channels/{id}`, `POST /api/channels/{id}/members` | Admin |
+| `PUT /api/me/prefs` (Favoriten, Extras), `POST/DELETE /api/me/feed-token` | angemeldet |
+| `GET /api/favorites/feed?t=…` (Favoriten fürs Windows-Symbol) | nur mit persönlichem Code |
+| `PUT /api/admin/fun` (Extras für alle freigeben/abschalten) | Admin |
 | `PUT /api/org/levels`, `POST/PUT/DELETE /api/org/units[/{id}]`, `POST /api/org/units/{id}/members` | Admin |
 | `GET/POST /api/tags`, `PUT/DELETE /api/tags/{id}`, `POST /api/tags/{id}/merge`, `POST /api/tags/cleanup` | Admin |
 | `GET/POST /api/admin/sync`, `POST /api/admin/ldap-test`, `GET /api/admin/audit` | Admin |

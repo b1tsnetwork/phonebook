@@ -200,3 +200,11 @@ func (r *readOnlyStore) DeleteChannel(context.Context, int64) error          { r
 func (r *readOnlyStore) SetChannel(context.Context, []int64, int64) (int, error) {
 	return 0, ErrReadOnly
 }
+
+// SetPrefs: im Rückfall-Betrieb nur im Speicher (z. B. Favoriten), die Datei bleibt unverändert
+func (r *readOnlyStore) SetPrefs(_ context.Context, user, prefs string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prefs[user] = prefs
+	return nil
+}

@@ -95,6 +95,11 @@ type Store interface {
 	DeleteChannel(ctx context.Context, id int64) error         // Zuweisungen werden entfernt
 	SetChannel(ctx context.Context, ids []int64, channel int64) (int, error)
 
+	// Persönliche Einstellungen (JSON, siehe UserPrefs) je Benutzername
+	GetPrefs(ctx context.Context, username string) (string, error) // "" = keine
+	SetPrefs(ctx context.Context, username, prefs string) error
+	ListPrefs(ctx context.Context) (map[string]string, error)
+
 	// Protokoll & AD-Abgleich
 	AddAudit(ctx context.Context, e AuditEntry) error
 	ListAudit(ctx context.Context, q string, limit int) ([]AuditEntry, error)
@@ -363,6 +368,7 @@ type Snapshot struct {
 	Settings   map[string]string `json:"settings,omitempty"`
 	Reports    []Report          `json:"reports,omitempty"`
 	Channels   []ContactChannel  `json:"contactChannels,omitempty"`
+	Prefs      map[string]string `json:"userPrefs,omitempty"`
 }
 
 const snapshotFormat = "telefonbuch"

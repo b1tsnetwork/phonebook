@@ -38,6 +38,7 @@ type jsonStore struct {
 	nextReport int64
 	channels   map[int64]*ContactChannel
 	nextChan   int64
+	prefs      map[string]string
 	users      map[string]*LocalUser
 	audit      []AuditEntry // älteste zuerst
 	syncRuns   []SyncResult // älteste zuerst
@@ -216,6 +217,10 @@ func (s *jsonStore) apply(snap *Snapshot) {
 	s.units, s.settings, s.reports = map[int64]*OrgUnit{}, map[string]string{}, nil
 	s.nextUnit, s.nextReport = 1, 1
 	s.channels, s.nextChan = map[int64]*ContactChannel{}, 1
+	s.prefs = map[string]string{}
+	for k, v := range snap.Prefs {
+		s.prefs[k] = v
+	}
 	for i := range snap.Channels {
 		c := snap.Channels[i]
 		s.channels[c.ID] = &c
@@ -279,6 +284,12 @@ func (s *jsonStore) snapshot(withAudit bool) *Snapshot {
 		snap.Channels = append(snap.Channels, *c)
 	}
 	sort.Slice(snap.Channels, func(i, j int) bool { return snap.Channels[i].ID < snap.Channels[j].ID })
+	if len(s.prefs) > 0 {
+		snap.Prefs = map[string]string{}
+		for k, v := range s.prefs {
+			snap.Prefs[k] = v
+		}
+	}
 	sort.Slice(snap.Employees, func(i, j int) bool { return snap.Employees[i].ID < snap.Employees[j].ID })
 	for _, t := range s.tags {
 		snap.Tags = append(snap.Tags, *t)
@@ -1431,4 +1442,29 @@ func (s *jsonStore) SetChannel(ctx context.Context, ids []int64, channel int64) 
 		return 0, nil
 	}
 	return n, s.commit()
+}
+
+// ---------- Persönliche Einstellungen ----------
+
+func (s *jsonStore) GetPrefs(ctx context.Context, user string) (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.prefs[user], nil
+}
+
+func (s *jsonStore) SetPrefs(ctx context.Context, user, prefs string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prefs[user] = prefs
+	return s.commit()
+}
+
+func (s *jsonStore) ListPrefs(ctx context.Context) (map[string]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]string, len(s.prefs))
+	for k, v := range s.prefs {
+		out[k] = v
+	}
+	return out, nil
 }

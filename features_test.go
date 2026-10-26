@@ -48,3 +48,37 @@ func TestMigrateUnitContacts(t *testing.T) {
 		t.Fatal("doppelt übernommen")
 	}
 }
+
+func TestFunGlobalAndPrefs(t *testing.T) {
+	ctx := t.Context()
+	st, err := newJSONStore(t.TempDir()+"/tb.json", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{cfg: defaultConfig()}
+	a.setStore(st)
+	if g := a.funGlobal(ctx); !g["village"] || !g["terminal"] {
+		t.Fatalf("Standard: alle freigegeben, %v", g)
+	}
+	_ = st.SetSetting(ctx, settingFun, `{"village":false}`)
+	if g := a.funGlobal(ctx); g["village"] || !g["quiz"] {
+		t.Fatalf("Freigabe: %v", g)
+	}
+	p := a.loadPrefs(ctx, "anna")
+	if p.public()["fun"].(map[string]bool)["quiz"] {
+		t.Fatal("persönlich muss standardmäßig aus sein")
+	}
+	p.Fun = map[string]bool{"badges": true}
+	_ = a.savePrefs(ctx, "anna", p)
+	_ = st.SetSetting(ctx, settingFun, `{}`)
+	if !a.badgeUsers(ctx)["anna"] {
+		t.Fatal("Abzeichen-Opt-in nicht erkannt")
+	}
+	_ = st.SetSetting(ctx, settingFun, `{"badges":false}`)
+	if a.badgeUsers(ctx)["anna"] {
+		t.Fatal("global abgeschaltet, trotzdem Abzeichen")
+	}
+	if hashFeedToken("x") == hashFeedToken("y") || len(hashFeedToken("x")) != 64 {
+		t.Fatal("Feed-Hash")
+	}
+}

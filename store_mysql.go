@@ -901,6 +901,12 @@ func (m *mysqlStore) Export(ctx context.Context) (*Snapshot, error) {
 	if s.Channels, err = m.ListChannels(ctx); err != nil {
 		return nil, err
 	}
+	if s.Prefs, err = m.ListPrefs(ctx); err != nil {
+		return nil, err
+	}
+	if len(s.Prefs) == 0 {
+		s.Prefs = nil
+	}
 	rows, err = m.db.QueryContext(ctx, `SELECT k, v FROM settings`)
 	if err != nil {
 		return nil, err
@@ -930,8 +936,13 @@ func (m *mysqlStore) Import(ctx context.Context, s *Snapshot) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, t := range []string{"employee_tags", "employees", "tags", "private_shares", "private_contacts", "tag_categories", "local_users", "audit_log", "sync_runs", "sessions", "org_units", "settings", "reports", "contact_channels"} {
+	for _, t := range []string{"employee_tags", "employees", "tags", "private_shares", "private_contacts", "tag_categories", "local_users", "audit_log", "sync_runs", "sessions", "org_units", "settings", "reports", "contact_channels", "user_prefs"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t); err != nil {
+			return err
+		}
+	}
+	for u, v := range s.Prefs {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO user_prefs (username, prefs) VALUES (?,?)`, u, v); err != nil {
 			return err
 		}
 	}
@@ -1334,4 +1345,37 @@ func (m *mysqlStore) SetChannel(ctx context.Context, ids []int64, channel int64)
 		n += int(k)
 	}
 	return n, nil
+}
+
+// ---------- Persönliche Einstellungen ----------
+
+func (m *mysqlStore) GetPrefs(ctx context.Context, user string) (string, error) {
+	var v string
+	err := m.db.QueryRowContext(ctx, `SELECT prefs FROM user_prefs WHERE username = ?`, user).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+func (m *mysqlStore) SetPrefs(ctx context.Context, user, prefs string) error {
+	_, err := m.db.ExecContext(ctx, `INSERT INTO user_prefs (username, prefs, updated_at) VALUES (?,?,?) ON DUPLICATE KEY UPDATE prefs = VALUES(prefs), updated_at = VALUES(updated_at)`, user, prefs, time.Now().UTC())
+	return err
+}
+
+func (m *mysqlStore) ListPrefs(ctx context.Context) (map[string]string, error) {
+	rows, err := m.db.QueryContext(ctx, `SELECT username, prefs FROM user_prefs`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var u, v string
+		if err := rows.Scan(&u, &v); err != nil {
+			return nil, err
+		}
+		out[u] = v
+	}
+	return out, rows.Err()
 }
