@@ -225,19 +225,31 @@ func (c *ContactPref) clone() *ContactPref {
 
 // Report: Meldung fehlerhafter Daten
 type Report struct {
-	ID           int64      `json:"id"`
-	EmployeeID   int64      `json:"employeeId,omitempty"`
-	Target       string     `json:"target"` // Name des Eintrags zum Zeitpunkt der Meldung
-	Field        string     `json:"field"`
-	Suggestion   string     `json:"suggestion,omitempty"`
-	Message      string     `json:"message,omitempty"`
-	Reporter     string     `json:"reporter"`
-	ReporterName string     `json:"reporterName,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	Status       string     `json:"status"` // open, done, rejected
-	ResolvedBy   string     `json:"resolvedBy,omitempty"`
-	ResolvedAt   *time.Time `json:"resolvedAt,omitempty"`
-	Note         string     `json:"note,omitempty"`
+	ID           int64       `json:"id"`
+	EmployeeID   int64       `json:"employeeId,omitempty"`
+	Target       string      `json:"target"` // Name des Eintrags zum Zeitpunkt der Meldung
+	Field        string      `json:"field"`
+	Suggestion   string      `json:"suggestion,omitempty"`
+	Message      string      `json:"message,omitempty"`
+	Reporter     string      `json:"reporter"`
+	ReporterName string      `json:"reporterName,omitempty"`
+	CreatedAt    time.Time   `json:"createdAt"`
+	Status       string      `json:"status"` // open, done, rejected
+	ResolvedBy   string      `json:"resolvedBy,omitempty"`
+	ResolvedAt   *time.Time  `json:"resolvedAt,omitempty"`
+	Note         string      `json:"note,omitempty"`
+	Details      *NewContact `json:"details,omitempty"` // nur bei „fehlender Kontakt“
+}
+
+// NewContact: Angaben zu einer Person, die im Telefonbuch fehlt
+type NewContact struct {
+	LastName  string `json:"lastName"`
+	FirstName string `json:"firstName,omitempty"`
+	Phone     string `json:"phone,omitempty"`
+	Mobile    string `json:"mobile,omitempty"`
+	Email     string `json:"email,omitempty"`
+	Room      string `json:"room,omitempty"`
+	Amt       string `json:"amt,omitempty"`
 }
 
 // Schlüssel für Einstellungen

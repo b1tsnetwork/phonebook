@@ -583,6 +583,7 @@ func (a *App) handleCreateEmployee(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, s.Username, "employee_create", empLabel(e), "")
+	a.autoCloseReports(r.Context(), s.Username) // z. B. Meldung „fehlender Kontakt“
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "id": id})
 }
 

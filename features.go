@@ -728,11 +728,13 @@ func (a *App) handleListReports(w http.ResponseWriter, r *http.Request) {
 	}
 	type reportOut struct {
 		Report
-		PS      string `json:"ps,omitempty"`      // PowerShell-Befehl fürs AD
-		PSWhy   string `json:"psWhy,omitempty"`   // warum kein Befehl möglich ist
-		Applied bool   `json:"applied,omitempty"` // Wert steht schon im Eintrag
+		Existing *employeeRef `json:"existing,omitempty"` // fehlender Kontakt: passender (z. B. ausgeblendeter) Eintrag
+		PS       string       `json:"ps,omitempty"`       // PowerShell-Befehl fürs AD
+		PSWhy    string       `json:"psWhy,omitempty"`    // warum kein Befehl möglich ist
+		Applied  bool         `json:"applied,omitempty"`  // Wert steht schon im Eintrag
 	}
 	out := make([]reportOut, 0, len(list))
+	var emps []EmployeeRec
 	for _, rep := range list {
 		var e *EmployeeRec
 		if rep.EmployeeID != 0 {
@@ -742,10 +744,19 @@ func (a *App) handleListReports(w http.ResponseWriter, r *http.Request) {
 		if rep.Status == "open" {
 			o.PS, o.PSWhy = a.psCommand(rep, e)
 		}
+		if rep.Field == fieldMissing && rep.Status == "open" {
+			if emps == nil {
+				emps, _ = a.st().ListEmployees(ctx, true)
+			}
+			if x := findPerson(rep.Details, emps, false); x != nil {
+				o.Existing = &employeeRef{ID: x.ID, Name: strings.TrimSpace(x.LastName + ", " + x.FirstName), Hidden: x.Hidden || !x.Active}
+				o.Applied = !o.Existing.Hidden
+			}
+		}
 		out = append(out, o)
 	}
 	open, _ := a.st().CountReports(ctx, "open", "")
-	writeJSON(w, http.StatusOK, map[string]any{"reports": out, "open": open, "fields": reportFields})
+	writeJSON(w, http.StatusOK, map[string]any{"reports": out, "open": open, "fields": reportLabels()})
 }
 
 func (a *App) handleUpdateReport(w http.ResponseWriter, r *http.Request) {
@@ -779,6 +790,12 @@ func (a *App) handleUpdateReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+type employeeRef struct {
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	Hidden bool   `json:"hidden,omitempty"`
+}
+
 // Eigene Meldungen (Status-Rückmeldung für die meldende Person)
 func (a *App) handleMyReports(w http.ResponseWriter, r *http.Request) {
 	s := sessionFrom(r)
@@ -797,5 +814,5 @@ func (a *App) handleMyReports(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"reports": out, "fields": reportFields})
+	writeJSON(w, http.StatusOK, map[string]any{"reports": out, "fields": reportLabels()})
 }

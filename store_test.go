@@ -254,6 +254,13 @@ func exerciseStore(t *testing.T, st Store) {
 	if l, _ := st.ListReports(ctx, "", 0); len(l) != 1 || l[0].EmployeeID != 0 || l[0].Target != "Vertreter" {
 		t.Fatalf("Meldung nach Löschen: %+v", l)
 	}
+	// Meldung „fehlender Kontakt“ mit Angaben (Spalte details)
+	if _, err := st.CreateReport(ctx, Report{Target: "Neu, Nina", Field: fieldMissing, Reporter: "anna", CreatedAt: now, Details: &NewContact{LastName: "Neu", FirstName: "Nina", Email: "nina.neu@example.org", Amt: "20"}}); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := st.ListReports(ctx, "open", 0); len(l) != 1 || l[0].Details == nil || l[0].Details.Email != "nina.neu@example.org" || l[0].Details.Amt != "20" {
+		t.Fatalf("Meldung mit Angaben: %+v", l)
+	}
 	// Einheit löschen → Personen wandern zur übergeordneten Einheit
 	if err := st.DeleteOrgUnit(ctx, amt); err != nil {
 		t.Fatal(err)
@@ -333,7 +340,7 @@ func exerciseStore(t *testing.T, st Store) {
 	if len(snap.Channels) != 1 || snap.Employees[0].Channel == 0 {
 		t.Fatalf("Export Kontaktwege: %+v", snap.Channels)
 	}
-	if len(snap.OrgUnits) != 1 || len(snap.Reports) != 1 || snap.Settings[settingOrgLevels] == "" {
+	if len(snap.OrgUnits) != 1 || len(snap.Reports) != 2 || snap.Reports[0].Details == nil && snap.Reports[1].Details == nil || snap.Settings[settingOrgLevels] == "" {
 		t.Fatalf("Export Organisation/Meldungen: %+v %+v %+v", snap.OrgUnits, snap.Reports, snap.Settings)
 	}
 	if len(snap.Categories) != 3 || snap.Private[0].Shares == nil || len(snap.Private[0].Shares.Amts) != 1 {

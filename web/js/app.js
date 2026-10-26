@@ -384,6 +384,7 @@ function update() {
   $('#people-foot').textContent = n === total ? `${total} Einträge` : `${n} von ${total} Einträgen`;
   $('#mt-people').textContent = n === total ? `(${total})` : `(${n}/${total})`;
   $('#people-empty').hidden = n > 0;
+  if (!n) renderEmpty();
   $('#people').hidden = n === 0;
   renderChips();
   renderCard();
@@ -607,7 +608,7 @@ function toggleMenu() {
     item('👥 Meine Vertretung', () => editDeputies(me), { disabled: !me, title: me ? null : 'Für dein Konto gibt es keinen Telefonbucheintrag' }),
   ];
   if (S.site.absences !== 'off') items.push(item('🏖 Meine Abwesenheit', () => editAbsences(me), { disabled: !me }));
-  if (S.site.reports !== false) items.push(item('🚩 Meine Meldungen', myReportsDialog));
+  if (S.site.reports !== false) items.push(item('🙋 Fehlende Person melden', () => reportMissingDialog()), item('🚩 Meine Meldungen', myReportsDialog));
   items.push(item('★ Favoriten im Windows-Symbol …', feedDialog));
   if (funOn('quiz')) items.push(item('🎯 Wer ist das? (Quiz)', () => F.openQuiz()));
   if (funOn('terminal')) items.push(item('⌨ Terminal  ( ^ )', () => F.openTerminal()));
@@ -663,7 +664,7 @@ function helpDialog() {
     sec('🏢 Organisation, Vertretung, Abwesenheit',
       ['Oben links zwischen ', h('b', null, '☰ Liste'), ' und ', h('b', null, '🏢 Organisation'), ' wechseln: Im Organigramm klickst du dich von Ebene zu Ebene, oben stehen jeweils Leitung und Stellvertretung.'],
       'Auf der Visitenkarte steht „Vertretung: …“ – ein Klick springt direkt zu dieser Person. 🏖 zeigt eine Abwesenheit samt Zeitraum und Vertretung.',
-      ['Eigene Vertretung und Abwesenheit trägst du im Menü ein. Stimmt etwas nicht, hilft ', h('b', null, '🚩 Fehler melden'), ' auf der Visitenkarte.']),
+      ['Eigene Vertretung und Abwesenheit trägst du im Menü ein. Stimmt etwas nicht, hilft ', h('b', null, '🚩 Fehler melden'), ' auf der Visitenkarte. Fehlt jemand ganz, gibt es im Menü ', h('b', null, '🙋 Fehlende Person melden'), '.']),
     sec('💻 Windows-Symbol',
       ['Das Telefonbuch als Symbol im Infobereich (unten rechts): Klick öffnet es, Rechtsklick → „Suchen …“. ', h('a', { href: '/client/telefonbuch-windows.zip', download: '' }, 'Herunterladen'), ', entpacken, ', h('b', null, 'install.cmd'), ' doppelklicken – ohne Administratorrechte.']),
     sec('⌨️ Tastatur',
@@ -783,13 +784,13 @@ function editTags(p) {
   setTimeout(() => input.focus(), 30);
 }
 
-function editPerson(p, kindNew) {
+function editPerson(p, kindNew, init) {
   const kind = p ? p.kind : kindNew;
   const isNew = !p;
   const locked = new Set(kind === 'emp' && p && p.source === 'ad' ? S.me.features.adLocked : []);
   const inputs = {};
   const mk = (k, type = 'text', max = 100) => {
-    const el = h('input', { type, value: p ? p[k] || '' : '', maxlength: max, disabled: locked.has(k) || null, autocomplete: 'off' });
+    const el = h('input', { type, value: p ? p[k] || '' : (init && init[k]) || '', maxlength: max, disabled: locked.has(k) || null, autocomplete: 'off' });
     inputs[k] = el;
     return field(FIELD_LABEL[k] + (locked.has(k) ? ' 🔒' : ''), el, locked.has(k) ? 'kommt aus dem AD' : null);
   };
@@ -856,6 +857,7 @@ function editPerson(p, kindNew) {
       await reload();
     } catch (e) { toast(e.message, 'err'); return false; }
   } });
+  if (init && init.hint) body.prepend(h('p', { class: 'hint full' }, init.hint));
   openDialog({ title: isNew ? (kind === 'priv' ? 'Privater Kontakt' : 'Neuer Eintrag') : (kind === 'priv' ? 'Privaten Kontakt bearbeiten' : 'Stammdaten bearbeiten'), body, buttons, wide: kind === 'priv' });
   setTimeout(() => (inputs.lastName.disabled ? inputs.phone : inputs.lastName).focus(), 30);
 }
@@ -1403,6 +1405,120 @@ function reportDialog(p) {
   setTimeout(() => sugg.focus(), 30);
 }
 
+// ---------- Fehlende Person melden ----------
+
+// Vorbelegung aus der Suche: „Max Muster“, „Muster, Max“ oder eine Nummer
+function guessFromSearch() {
+  const q = ($('#q-main').value || '').trim();
+  const out = { amt: ($('#q-amt').value || '').trim(), room: ($('#q-room').value || '').trim() };
+  if (!q) return out;
+  if (/^[\d+\-/() .]+$/.test(q)) { out.phone = q; return out; }
+  if (q.includes(',')) { const [l, f] = q.split(','); out.lastName = l.trim(); out.firstName = (f || '').trim(); return out; }
+  const w = q.split(/\s+/);
+  if (w.length === 1) out.lastName = w[0];
+  else { out.firstName = w.slice(0, -1).join(' '); out.lastName = w[w.length - 1]; }
+  return out;
+}
+
+function similarPeople(last, first, mail) {
+  const nl = norm(last), nf = norm(first), m = mail.trim().toLowerCase();
+  if (!nl && !m) return [];
+  return S.people.filter((p) => p.kind === 'emp' && p.active && !p.hidden && (
+    (m && (p.email || '').toLowerCase() === m) ||
+    (nl && norm(p.lastName || '') === nl && (!nf || norm(p.firstName || '').startsWith(nf) || nf.startsWith(norm(p.firstName || '') || '\u0000'))))).slice(0, 3);
+}
+
+function reportMissingDialog(pre = guessFromSearch()) {
+  const inputs = {};
+  const mk = (k, type = 'text', max = 100, ph = '') => {
+    const el = h('input', { type, value: pre[k] || '', maxlength: max, autocomplete: 'off', placeholder: ph });
+    inputs[k] = el;
+    return field(FIELD_LABEL[k] + (k === 'lastName' || k === 'firstName' ? ' *' : ''), el);
+  };
+  const msg = h('textarea', { rows: 3, maxlength: 500, placeholder: 'z. B. „neu seit 1. Oktober im Amt 20“ oder „Durchwahl steht nur im Mailfooter“' });
+  const dupEl = h('div', { class: 'dup-hint full', hidden: true });
+  let force = false;
+  const checkDup = () => {
+    force = false;
+    const sim = similarPeople(inputs.lastName.value, inputs.firstName.value, inputs.email.value);
+    dupEl.hidden = !sim.length;
+    dupEl.replaceChildren(...(sim.length ? [h('b', null, 'Schon im Telefonbuch? '), ...sim.flatMap((p, i) => [i ? ', ' : '',
+      h('button', { type: 'button', class: 'linkish', title: 'Zur Person springen', onclick: () => { $('#dlg').close(); goPerson(p.key); } }, nameOf(p) + (p.amt ? ` (${p.amt})` : ''))]),
+      h('div', { class: 'muted small' }, 'Stimmen dort nur einzelne Angaben nicht, bitte dort „🚩 Fehler melden“ nutzen.')] : []));
+  };
+  const body = h('div', { class: 'form-grid' },
+    h('p', { class: 'hint full' }, 'Du vermisst jemanden im Telefonbuch? Gib an, was du weißt – die Administration nimmt die Person auf. Sobald sie im Telefonbuch steht, wird deine Meldung automatisch erledigt.'),
+    mk('firstName'), mk('lastName'), dupEl,
+    mk('phone', 'tel', 64), mk('mobile', 'tel', 64), mk('amt', 'text', 150), mk('room', 'text', 64),
+    h('div', { class: 'full' }, mk('email', 'email', 254)),
+    h('div', { class: 'full' }, field('Hinweis (optional)', msg)));
+  const dl = h('datalist', { id: 'amt-list-m' }, [...new Set(S.people.map((x) => x.amt).filter(Boolean))].sort(collator.compare).map((a) => h('option', { value: a })));
+  body.append(dl);
+  inputs.amt.setAttribute('list', 'amt-list-m');
+  for (const k of ['lastName', 'firstName', 'email']) inputs[k].addEventListener('input', checkDup);
+  checkDup();
+  openDialog({
+    title: '🙋 Fehlende Person melden',
+    body,
+    buttons: ['spacer', { label: 'Abbrechen' }, { label: '🙋 Melden', cls: 'primary', onClick: async () => {
+      const data = { message: msg.value, force };
+      for (const k of Object.keys(inputs)) data[k] = inputs[k].value;
+      try {
+        await api('POST', '/api/reports/missing', data);
+        toast('Danke! Die Meldung ist eingegangen.', 'ok');
+      } catch (e) {
+        if (e.status === 409 && !force && /schon im Telefonbuch/.test(e.message)) {
+          checkDup();
+          dupEl.hidden = false;
+          if (!dupEl.firstChild) dupEl.append(h('b', null, e.message));
+          dupEl.append(h('div', { class: 'small' }, 'Ist es eine andere Person? Dann noch einmal auf „Melden“ klicken.'));
+          force = true;
+          return false;
+        }
+        toast(e.message, 'err'); return false;
+      }
+    } }],
+  });
+  setTimeout(() => (inputs.firstName.value ? (inputs.lastName.value ? inputs.phone : inputs.lastName) : inputs.firstName).focus(), 30);
+}
+
+function renderEmpty() {
+  const el = $('#people-empty');
+  const kids = ['Niemand gefunden.'];
+  if (S.me && !S.me.guest && S.site.reports !== false && !S.favOnly && ($('#q-main').value || '').trim()) {
+    kids.push(h('div', { class: 'empty-act' }, h('button', { type: 'button', onclick: () => reportMissingDialog() }, '🙋 Fehlt jemand? Person melden')));
+  }
+  el.replaceChildren(...kids);
+}
+
+function missingRow(x, r, setStatus) {
+  const d = x.details || {};
+  const ex = x.existing ? empByID(x.existing.id) : null;
+  const facts = [['Amt', d.amt], ['Telefon', d.phone], ['Mobil', d.mobile], ['E-Mail', d.email], ['Raum', d.room]].filter(([, v]) => v);
+  return h('tr', { class: x.status },
+    h('td', null, fmtDate(x.createdAt)),
+    h('td', null, h('b', null, x.target), h('div', null, h('span', { class: 'badge new', title: 'Diese Person steht nicht im Telefonbuch' }, 'neu'))),
+    h('td', null, r.fields[x.field] || x.field),
+    h('td', null, x.existing
+      ? h('div', null, ex ? h('button', { type: 'button', class: 'linkish', onclick: () => { $('#dlg').close(); goPerson(ex.key); } }, x.existing.name) : x.existing.name,
+        x.existing.hidden ? h('div', { class: 'muted small' }, 'vorhanden, aber ausgeblendet/inaktiv') : null)
+      : h('span', { class: 'muted' }, 'nicht vorhanden')),
+    h('td', null, facts.length ? h('div', { class: 'kv-mini' }, facts.flatMap(([k, v]) => [h('span', { class: 'muted' }, k), h('span', null, v)])) : '',
+      x.message ? h('div', { class: 'muted' }, x.message) : '',
+      x.applied ? h('div', null, h('span', { class: 'badge away', title: 'Die Person steht inzwischen im Telefonbuch' }, '✓ schon im Telefonbuch')) : null),
+    h('td', null, x.reporterName || x.reporter),
+    h('td', { class: 'rep-act' },
+      h('input', { id: `rn-${x.id}`, type: 'text', value: x.note || '', placeholder: 'Antwort/Notiz', maxlength: 500 }),
+      h('div', { class: 'btnrow' },
+        x.status === 'open' && !x.existing ? h('button', { type: 'button', title: 'Als manuellen Eintrag anlegen – die Meldung wird danach automatisch erledigt', onclick: () => editPerson(null, 'emp', { ...d,
+          hint: `Aus der Meldung von ${x.reporterName || x.reporter}. ${S.me.features.syncEnabled ? 'Gehört die Person ins Active Directory, dort anlegen – der nächste AD-Abgleich übernimmt sie und erledigt die Meldung.' : ''}` }) }, '➕ Anlegen') : null,
+        x.status === 'open' && ex && x.existing.hidden ? h('button', { type: 'button', title: 'Vorhandenen Eintrag bearbeiten (z. B. einblenden)', onclick: () => editPerson(ex) }, '✏️') : null,
+        x.status !== 'done' ? h('button', { type: 'button', title: 'Erledigt', onclick: () => setStatus(x, 'done') }, '✅') : null,
+        x.status !== 'rejected' ? h('button', { type: 'button', title: 'Ablehnen', onclick: () => setStatus(x, 'rejected') }, '✖') : null,
+        x.status !== 'open' ? h('button', { type: 'button', title: 'Wieder öffnen', onclick: () => setStatus(x, 'open') }, '↺') : null,
+        x.status !== 'open' && x.resolvedBy ? h('small', { class: 'muted' }, `${x.resolvedBy}, ${fmtDate(x.resolvedAt)}`) : null)));
+}
+
 const REPORT_STATUS = { open: '⏳ offen', done: '✅ erledigt', rejected: '✖ abgelehnt' };
 
 async function myReportsDialog() {
@@ -1438,6 +1554,7 @@ async function reportsDialog(status = 'open') {
     S.me.features.syncEnabled ? h('button', { type: 'button', onclick: () => syncDialog() }, '🔄 AD-Abgleich …') : null);
   const tabs = h('div', { class: 'seg small' }, Object.entries({ open: 'Offen', done: 'Erledigt', rejected: 'Abgelehnt', all: 'Alle' }).map(([k, l]) => h('button', { type: 'button', class: k === status ? 'active' : '', onclick: () => reportsDialog(k) }, l + (k === 'open' ? ` (${r.open})` : ''))));
   const rows = r.reports.map((x) => {
+    if (x.field === 'missing') return missingRow(x, r, setStatus);
     const p = x.employeeId ? empByID(x.employeeId) : null;
     const fmap = { name: 'lastName' };
     const adLocked = p && p.source === 'ad' && (S.me.features.adLocked || []).includes(fmap[x.field] || x.field);
@@ -1465,7 +1582,7 @@ async function reportsDialog(status = 'open') {
       rows.length ? h('div', { class: 'table-wrap tall' }, h('table', { class: 'tbl reports' },
         h('thead', null, h('tr', null, ['Datum', 'Eintrag', 'Was', 'Aktuell', 'Vorschlag / Hinweis', 'Von', 'Bearbeitung'].map((x) => h('th', null, x)))), h('tbody', null, rows)))
         : h('p', { class: 'muted' }, status === 'open' ? 'Keine offenen Meldungen. 🎉' : 'Keine Meldungen.'),
-      h('p', { class: 'hint' }, 'Felder mit „AD“ werden im Active Directory gepflegt. Das Telefonbuch schreibt nicht selbst ins AD, erzeugt aber geprüfte PowerShell-Befehle (Set-ADUser) zum Kopieren. Nach dem nächsten AD-Abgleich werden Meldungen, deren Wert übernommen ist, automatisch erledigt. Die Notiz sieht die meldende Person unter „Meine Meldungen“.')),
+      h('p', { class: 'hint' }, 'Felder mit „AD“ werden im Active Directory gepflegt. Das Telefonbuch schreibt nicht selbst ins AD, erzeugt aber geprüfte PowerShell-Befehle (Set-ADUser) zum Kopieren. Nach dem nächsten AD-Abgleich werden Meldungen, deren Wert übernommen ist, automatisch erledigt – ebenso gemeldete fehlende Personen, sobald sie im Telefonbuch stehen (aus dem AD oder über „➕ Anlegen“). Die Notiz sieht die meldende Person unter „Meine Meldungen“.')),
     buttons: ['spacer', { label: 'Schließen', cls: 'primary' }],
     onClose: () => reload(),
   });
@@ -1960,7 +2077,7 @@ async function storageDialog() {
 async function auditDialog() {
   const q = h('input', { type: 'search', placeholder: 'Suchen (Benutzer, Aktion, Eintrag …)' });
   const tbody = h('tbody');
-  const ACT = { mysql_import: 'Übernahme aus MySQL', login: 'Anmeldung', login_failed: 'Anmeldung fehlgeschlagen', tags_update: 'Schlagworte geändert', avatar_update: 'Avatar geändert', employee_create: 'Eintrag angelegt', employee_update: 'Stammdaten geändert', employee_delete: 'Eintrag gelöscht', tag_create: 'Schlagwort angelegt', tag_update: 'Schlagwort geändert', tag_merge: 'Schlagworte zusammengeführt', tag_delete: 'Schlagwort gelöscht', tag_cleanup: 'Unbenutzte Schlagworte gelöscht', ad_sync: 'AD-Abgleich', category_create: 'Kategorie angelegt', category_update: 'Kategorie geändert', category_delete: 'Kategorie gelöscht', storage_online: 'Datenbank wieder erreichbar', deputies_update: 'Vertretung geändert', absences_update: 'Abwesenheit geändert', report_create: 'Fehler gemeldet', report_done: 'Meldung erledigt', report_rejected: 'Meldung abgelehnt', report_open: 'Meldung wieder geöffnet', org_levels: 'Ebenen geändert', org_unit_create: 'Einheit angelegt', org_unit_update: 'Einheit geändert', org_unit_delete: 'Einheit gelöscht', org_members: 'Einheit: Zuordnung', org_assign: 'Organisation zugeordnet', channel_create: 'Kontaktweg angelegt', channel_update: 'Kontaktweg geändert', channel_delete: 'Kontaktweg gelöscht', channel_members: 'Kontaktweg zugewiesen', feed_token: 'Favoriten-Code', fun_settings: 'Extras geändert', org_auto_assign: 'Automatische Zuordnung', reports_powershell: 'PowerShell-Skript erzeugt', reports_autoclose: 'Meldungen automatisch erledigt' };
+  const ACT = { mysql_import: 'Übernahme aus MySQL', login: 'Anmeldung', login_failed: 'Anmeldung fehlgeschlagen', tags_update: 'Schlagworte geändert', avatar_update: 'Avatar geändert', employee_create: 'Eintrag angelegt', employee_update: 'Stammdaten geändert', employee_delete: 'Eintrag gelöscht', tag_create: 'Schlagwort angelegt', tag_update: 'Schlagwort geändert', tag_merge: 'Schlagworte zusammengeführt', tag_delete: 'Schlagwort gelöscht', tag_cleanup: 'Unbenutzte Schlagworte gelöscht', ad_sync: 'AD-Abgleich', category_create: 'Kategorie angelegt', category_update: 'Kategorie geändert', category_delete: 'Kategorie gelöscht', storage_online: 'Datenbank wieder erreichbar', deputies_update: 'Vertretung geändert', absences_update: 'Abwesenheit geändert', report_create: 'Fehler gemeldet', report_missing: 'Fehlende Person gemeldet', report_done: 'Meldung erledigt', report_rejected: 'Meldung abgelehnt', report_open: 'Meldung wieder geöffnet', org_levels: 'Ebenen geändert', org_unit_create: 'Einheit angelegt', org_unit_update: 'Einheit geändert', org_unit_delete: 'Einheit gelöscht', org_members: 'Einheit: Zuordnung', org_assign: 'Organisation zugeordnet', channel_create: 'Kontaktweg angelegt', channel_update: 'Kontaktweg geändert', channel_delete: 'Kontaktweg gelöscht', channel_members: 'Kontaktweg zugewiesen', feed_token: 'Favoriten-Code', fun_settings: 'Extras geändert', org_auto_assign: 'Automatische Zuordnung', reports_powershell: 'PowerShell-Skript erzeugt', reports_autoclose: 'Meldungen automatisch erledigt' };
   const load = async () => {
     try {
       const r = await api('GET', '/api/admin/audit?limit=500&q=' + encodeURIComponent(q.value));

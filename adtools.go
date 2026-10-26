@@ -42,6 +42,9 @@ func psQuote(s string) string {
 
 // reportADChange liefert für eine Meldung die AD-Attribute (attr → Wert, "" = leeren) oder einen Grund.
 func (a *App) reportADChange(rep Report, e *EmployeeRec) (map[string]string, string) {
+	if rep.Field == fieldMissing {
+		return nil, "neue Person – im AD anlegen oder als Eintrag übernehmen"
+	}
 	if e == nil {
 		return nil, "Eintrag gelöscht"
 	}
@@ -177,7 +180,7 @@ func (a *App) handleReportsPowerShell(w http.ResponseWriter, r *http.Request) {
 			e, _ = a.st().GetEmployee(ctx, rep.EmployeeID)
 		}
 		cmd, why := a.psCommand(rep, e)
-		label := reportFields[rep.Field]
+		label := reportLabel(rep.Field)
 		if cmd == "" {
 			fmt.Fprintf(&b, "# #%d %s – %s: übersprungen (%s)\r\n\r\n", rep.ID, oneLine(rep.Target), label, why)
 			continue
@@ -259,7 +262,7 @@ func (a *App) autoCloseReports(ctx context.Context, by string) int {
 	if err != nil {
 		return 0
 	}
-	n := 0
+	n := a.closeFoundMissing(ctx, list, by)
 	for _, rep := range list {
 		if rep.EmployeeID == 0 {
 			continue

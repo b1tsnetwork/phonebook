@@ -82,3 +82,42 @@ func TestFunGlobalAndPrefs(t *testing.T) {
 		t.Fatal("Feed-Hash")
 	}
 }
+
+func TestMissingContactAutoClose(t *testing.T) {
+	ctx := t.Context()
+	st, err := newJSONStore(t.TempDir()+"/tb.json", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{cfg: defaultConfig()}
+	a.setStore(st)
+	d := &NewContact{LastName: "Groß-Müller", FirstName: "Lena", Amt: "20"}
+	rid, _ := st.CreateReport(ctx, Report{Target: "Groß-Müller, Lena", Field: fieldMissing, Reporter: "anna", Details: d})
+	if n := a.autoCloseReports(ctx, "test"); n != 0 {
+		t.Fatal("ohne Eintrag erledigt")
+	}
+	if _, why := a.psCommand(Report{Field: fieldMissing}, nil); why == "" {
+		t.Fatal("kein Grund für fehlenden PowerShell-Befehl")
+	}
+	// ausgeblendet zählt nicht als „im Telefonbuch“
+	id, _ := st.CreateEmployee(ctx, &EmployeeRec{LastName: "Gross Müller", FirstName: "lena", Active: true, Hidden: true})
+	if n := a.autoCloseReports(ctx, "test"); n != 0 {
+		t.Fatal("ausgeblendeter Eintrag hat Meldung erledigt")
+	}
+	emps, _ := st.ListEmployees(ctx, true)
+	if findPerson(d, emps, false) == nil {
+		t.Fatal("Schreibweise (ß/Bindestrich/Groß-klein) nicht erkannt")
+	}
+	e, _ := st.GetEmployee(ctx, id)
+	e.Hidden = false
+	if err := st.UpdateEmployee(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	if n := a.autoCloseReports(ctx, "test"); n != 1 {
+		t.Fatalf("nicht automatisch erledigt: %d", n)
+	}
+	l, _ := st.ListReports(ctx, "done", 0)
+	if len(l) != 1 || l[0].ID != rid || l[0].Note == "" {
+		t.Fatalf("Meldung: %+v", l)
+	}
+}

@@ -575,3 +575,13 @@ body.upside img.av, body.upside .card-av, body.upside .org-person img, body.upsi
 .term-pre { margin: 0; font: inherit; }
 .term-card { display: flex; gap: 14px; align-items: flex-start; margin: 4px 0 8px; white-space: pre; }
 .term-av { line-height: 1; letter-spacing: 0; font-size: 12px; }
+
+/* Fehlende Person melden */
+.empty-act { margin-top: 12px; }
+.dup-hint { padding: 8px 10px; border: 1px solid #e6cf86; background: #fff8e1; border-radius: 8px; font-size: .92em; }
+.badge.new { background: #e8f0fe; border-color: #b6ccf5; color: #1f4f9c; }
+.kv-mini { display: grid; grid-template-columns: auto 1fr; gap: 0 8px; font-size: .92em; }
+@media (prefers-color-scheme: dark) {
+  .dup-hint { background: #2e2810; border-color: #6b5a20; }
+  .badge.new { background: #14243f; border-color: #2c4a7a; color: #a9c6f5; }
+}

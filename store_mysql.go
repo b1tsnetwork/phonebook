@@ -964,8 +964,8 @@ func (m *mysqlStore) Import(ctx context.Context, s *Snapshot) error {
 		}
 	}
 	for _, r := range s.Reports {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (id, employee_id, target, field, suggestion, message, reporter, reporter_name, created_at, status, resolved_by, resolved_at, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			r.ID, nullID(r.EmployeeID), r.Target, r.Field, r.Suggestion, r.Message, r.Reporter, r.ReporterName, r.CreatedAt, r.Status, r.ResolvedBy, r.ResolvedAt, r.Note); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reports (id, employee_id, target, field, suggestion, message, reporter, reporter_name, created_at, status, resolved_by, resolved_at, note, details) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			r.ID, nullID(r.EmployeeID), r.Target, r.Field, r.Suggestion, r.Message, r.Reporter, r.ReporterName, r.CreatedAt, r.Status, r.ResolvedBy, r.ResolvedAt, r.Note, detailsCol(r.Details)); err != nil {
 			return err
 		}
 	}
@@ -1203,16 +1203,24 @@ func (m *mysqlStore) SetSetting(ctx context.Context, key, value string) error {
 // ---------- Fehlermeldungen ----------
 
 func (m *mysqlStore) CreateReport(ctx context.Context, r Report) (int64, error) {
-	res, err := m.db.ExecContext(ctx, `INSERT INTO reports (employee_id, target, field, suggestion, message, reporter, reporter_name, created_at, status) VALUES (?,?,?,?,?,?,?,?,'open')`,
-		nullID(r.EmployeeID), r.Target, r.Field, r.Suggestion, r.Message, r.Reporter, r.ReporterName, r.CreatedAt)
+	res, err := m.db.ExecContext(ctx, `INSERT INTO reports (employee_id, target, field, suggestion, message, reporter, reporter_name, created_at, status, details) VALUES (?,?,?,?,?,?,?,?,'open',?)`,
+		nullID(r.EmployeeID), r.Target, r.Field, r.Suggestion, r.Message, r.Reporter, r.ReporterName, r.CreatedAt, detailsCol(r.Details))
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
+func detailsCol(d *NewContact) any {
+	if d == nil {
+		return nil
+	}
+	b, _ := json.Marshal(d)
+	return string(b)
+}
+
 func (m *mysqlStore) ListReports(ctx context.Context, status string, limit int) ([]Report, error) {
-	q := `SELECT id, COALESCE(employee_id,0), target, field, suggestion, message, reporter, reporter_name, created_at, status, resolved_by, resolved_at, note FROM reports`
+	q := `SELECT id, COALESCE(employee_id,0), target, field, suggestion, message, reporter, reporter_name, created_at, status, resolved_by, resolved_at, note, details FROM reports`
 	args := []any{}
 	if status != "" {
 		q += ` WHERE status = ?`
@@ -1232,8 +1240,15 @@ func (m *mysqlStore) ListReports(ctx context.Context, status string, limit int) 
 	for rows.Next() {
 		var r Report
 		var ra sql.NullTime
-		if err := rows.Scan(&r.ID, &r.EmployeeID, &r.Target, &r.Field, &r.Suggestion, &r.Message, &r.Reporter, &r.ReporterName, &r.CreatedAt, &r.Status, &r.ResolvedBy, &ra, &r.Note); err != nil {
+		var det sql.NullString
+		if err := rows.Scan(&r.ID, &r.EmployeeID, &r.Target, &r.Field, &r.Suggestion, &r.Message, &r.Reporter, &r.ReporterName, &r.CreatedAt, &r.Status, &r.ResolvedBy, &ra, &r.Note, &det); err != nil {
 			return nil, err
+		}
+		if det.Valid && det.String != "" {
+			var d NewContact
+			if json.Unmarshal([]byte(det.String), &d) == nil {
+				r.Details = &d
+			}
 		}
 		if ra.Valid {
 			t := ra.Time

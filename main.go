@@ -205,6 +205,7 @@ func (a *App) routes(dev bool) http.Handler {
 	mux.HandleFunc("PUT /api/employees/{id}/deputies", a.requireAuth(a.handleSetDeputies))
 	mux.HandleFunc("PUT /api/employees/{id}/absences", a.requireAuth(a.handleSetAbsences))
 	mux.HandleFunc("POST /api/employees/{id}/reports", a.requireAuth(a.handleCreateReport))
+	mux.HandleFunc("POST /api/reports/missing", a.requireAuth(a.handleReportMissing))
 	mux.HandleFunc("GET /api/reports/mine", a.requireAuth(a.handleMyReports))
 	mux.HandleFunc("GET /api/admin/reports", a.requireAdmin(a.handleListReports))
 	mux.HandleFunc("GET /api/admin/reports/powershell", a.requireAdmin(a.handleReportsPowerShell))
